@@ -3,7 +3,7 @@ import express from 'express'
 import cors from 'cors'
 import bcrypt from 'bcryptjs'
 import axios from 'axios'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { fail, parsePagination, success } from './utils.js'
 import { getPool, initDatabase } from './db.js'
 import { runNewsIngestion, startNewsCollector } from './newsPipeline.js'
@@ -1121,6 +1121,313 @@ app.post('/api/v1/pipeline/news/run', async (_req, res) => {
   const result = await runNewsIngestion({ pool })
   res.json(success(result))
 })
+
+function extractJsonFromText(raw) {
+  if (raw == null) return null
+  if (typeof raw === 'object') return raw
+  const text = String(raw).trim()
+  if (!text) return null
+
+  // 兼容 markdown code fence 或纯 JSON
+  const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
+  if (fencedMatch?.[1]) {
+    try {
+      return JSON.parse(fencedMatch[1].trim())
+    } catch {
+      return null
+    }
+  }
+
+  const firstBrace = text.indexOf('{')
+  const lastBrace = text.lastIndexOf('}')
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const candidate = text.slice(firstBrace, lastBrace + 1).trim()
+    try {
+      return JSON.parse(candidate)
+    } catch {
+      // ignore
+    }
+  }
+
+  const firstBracket = text.indexOf('[')
+  const lastBracket = text.lastIndexOf(']')
+  if (firstBracket >= 0 && lastBracket > firstBracket) {
+    const candidate = text.slice(firstBracket, lastBracket + 1).trim()
+    try {
+      return JSON.parse(candidate)
+    } catch {
+      // ignore
+    }
+  }
+
+  return null
+}
+
+function normalizeDashscopeWorkflowItems(workflowJson) {
+  const obj = workflowJson
+  if (!obj) return []
+  if (Array.isArray(obj)) return obj
+  // 百炼工作流常见返回形态：{ res3: { res: "{...newsAnalysis:[...]}" } }
+  if (obj?.res3?.res && typeof obj.res3.res === 'string') {
+    const tryParse = (s) => {
+      try {
+        return JSON.parse(s)
+      } catch {
+        return null
+      }
+    }
+    // res3.res 通常是“字符串形式的 JSON”，可能会有前后额外字符，因此先直接 parse，再回退到截取解析
+    const inner = tryParse(obj.res3.res) || extractJsonFromText(obj.res3.res)
+    if (Array.isArray(inner?.newsAnalysis)) return inner.newsAnalysis
+    if (Array.isArray(inner?.items)) return inner.items
+    if (Array.isArray(inner?.results)) return inner.results
+    if (Array.isArray(inner?.news)) return inner.news
+  }
+  if (Array.isArray(obj.items)) return obj.items
+  if (Array.isArray(obj.results)) return obj.results
+  if (Array.isArray(obj.news)) return obj.news
+  if (Array.isArray(obj.data?.items)) return obj.data.items
+  if (obj.news && Array.isArray(obj.news.items)) return obj.news.items
+  // 单条对象也尽量处理为 1 条
+  if (obj.title || obj.content || obj.url || obj.news_uid || obj.newsUid) return [obj]
+  return []
+}
+
+function toMysqlDateTime(value) {
+  if (!value) return null
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toISOString().slice(0, 19).replace('T', ' ')
+}
+
+function normalizeRiskLevel(riskLevel, fakeScore) {
+  const v = String(riskLevel || '').trim()
+  if (['低风险', '中风险', '高风险'].includes(v)) return v
+  if (/^low$/i.test(v) || /^Low$/i.test(v)) return '低风险'
+  if (/^medium$/i.test(v) || /^Medium$/i.test(v)) return '中风险'
+  if (/^high$/i.test(v) || /^High$/i.test(v)) return '高风险'
+
+  const score = Number(fakeScore)
+  if (!Number.isNaN(score)) {
+    return score >= 70 ? '高风险' : score >= 45 ? '中风险' : '低风险'
+  }
+  return '低风险'
+}
+
+function computeNewsUid({ uniqueId, url, title, publishedAt }) {
+  if (uniqueId) return String(uniqueId)
+  const basis = [url, title, publishedAt].filter(Boolean).join('|')
+  if (basis) return createHash('sha1').update(basis).digest('hex')
+  return createHash('sha1').update(String(Date.now() + Math.random())).digest('hex')
+}
+
+async function upsertNewsFromWorkflowItem(item) {
+  const title = String(item?.title || item?.newsTitle || '').trim()
+  const content = item?.content || item?.body || item?.article || ''
+  const description = item?.description || item?.summary || null
+  const sourceName = item?.source_name || item?.sourceName || item?.source || null
+  const url = item?.url || item?.link || item?.source_url || null
+  const language = item?.language || item?.lang || 'unknown'
+  const publishedAt = item?.published_at || item?.publishedAt || item?.time || null
+  const rawJson = item?.raw_json || item?.rawJson || item?.raw || null
+  const author = item?.author || null
+  const imageUrl = item?.image_url || item?.imageUrl || null
+  const newsUid = computeNewsUid({
+    uniqueId: item?.news_uid || item?.newsUid || item?.uniqueId || item?.uid || item?.id,
+    url,
+    title,
+    publishedAt,
+  })
+
+  if (!newsUid) throw new Error('workflow item 缺少新闻唯一ID')
+
+  const cleanContent = cleanArticleText(String(content || ''))
+  const cleanDescription = description ? cleanArticleText(String(description)) : null
+
+  await pool.execute(
+    `
+      INSERT INTO news (
+        news_uid, title, description, content, source_name, author, url, image_url, language, published_at, raw_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        title = COALESCE(VALUES(title), title),
+        description = COALESCE(VALUES(description), description),
+        content = COALESCE(VALUES(content), content),
+        source_name = COALESCE(VALUES(source_name), source_name),
+        author = COALESCE(VALUES(author), author),
+        url = COALESCE(VALUES(url), url),
+        image_url = COALESCE(VALUES(image_url), image_url),
+        language = COALESCE(VALUES(language), language),
+        published_at = COALESCE(VALUES(published_at), published_at),
+        raw_json = COALESCE(VALUES(raw_json), raw_json)
+    `,
+    [
+      newsUid,
+      title || (url ? url.slice(0, 80) : '新闻工作流分析'),
+      cleanDescription,
+      cleanContent || null,
+      sourceName,
+      author,
+      url,
+      imageUrl,
+      language,
+      toMysqlDateTime(publishedAt),
+      typeof rawJson === 'string' ? rawJson : rawJson ? JSON.stringify(rawJson) : null,
+    ],
+  )
+
+  const [rows] = await pool.execute('SELECT id FROM news WHERE news_uid = ? LIMIT 1', [newsUid])
+  return { newsId: rows?.[0]?.id ?? null, newsUid }
+}
+
+async function runNewsWorkflowHandler(req, res) {
+  const uid = await resolveHistoryUserId(req)
+  const apiKey = process.env.DASHSCOPE_API_KEY
+  const appId = process.env.DASHSCOPE_WORKFLOW_APP_ID
+  if (!apiKey) return res.status(500).json(fail('DASHSCOPE_API_KEY 未配置', 500, 'AI_SERVICE_ERROR'))
+  if (!appId) return res.status(500).json(fail('DASHSCOPE_WORKFLOW_APP_ID 未配置', 500, 'AI_SERVICE_ERROR'))
+
+  // workflow 的 prompt 由你 workflow 配置决定；此处允许用环境变量覆盖
+  const prompt =
+    String(req.body?.prompt || '').trim() ||
+    process.env.DASHSCOPE_WORKFLOW_PROMPT ||
+    '请拉取新闻并执行工作流分析，返回可入库的 JSON 结果。'
+
+  const url = `https://dashscope.aliyuncs.com/api/v1/apps/${appId}/completion`
+  const data = {
+    input: {
+      prompt,
+    },
+    parameters: {},
+    debug: {},
+  }
+
+  const rawTimeout =
+    req.body?.timeoutMs != null ? Number(req.body.timeoutMs) : Number(process.env.DASHSCOPE_WORKFLOW_TIMEOUT_MS || 360000)
+  // 允许长工作流，但防止误配无限等待
+  const timeoutMs = Number.isNaN(rawTimeout) ? 360000 : Math.max(10000, Math.min(rawTimeout, 600000))
+
+  let workflowText = null
+  try {
+    const response = await axios.post(url, data, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: timeoutMs,
+    })
+
+    workflowText =
+      response?.data?.output?.text ||
+      response?.data?.output?.result ||
+      response?.data?.output ||
+      response?.data?.text ||
+      null
+
+    let parsed = null
+    try {
+      parsed = JSON.parse(workflowText)
+    } catch {
+      parsed = null
+    }
+    if (!parsed) parsed = extractJsonFromText(workflowText)
+    if (!parsed) parsed = response?.data
+    const items = normalizeDashscopeWorkflowItems(parsed)
+
+    if (!items.length) {
+      return res.status(502).json(fail('工作流未返回可解析的新闻结果', 502, 'WORKFLOW_PARSE_ERROR'))
+    }
+
+    let storedCount = 0
+
+    for (const item of items) {
+      const title = String(item?.title || item?.newsTitle || '').trim()
+      const content = String(item?.content || item?.body || item?.article || '')
+      const sourceName = item?.source_name || item?.sourceName || item?.source || null
+      const newsUrl = item?.url || item?.link || item?.source_url || null
+      const publishedAt = item?.published_at || item?.publishedAt || item?.time || null
+      const language = item?.language || item?.lang || null
+
+      const newsSummary = item?.summary || item?.newsSummary || item?.ai_summary || item?.aiSummary || null
+
+      const fakeScore = Number(
+        item?.fake_score ??
+          item?.fakeScore ??
+          item?.score ??
+          item?.overall_risk ??
+          item?.risk_score ??
+          0,
+      )
+      const riskLevel = normalizeRiskLevel(item?.risk_level || item?.riskLevel || item?.risk || null, fakeScore)
+
+      const { newsId, newsUid } = await upsertNewsFromWorkflowItem({
+        ...item,
+        title,
+        content,
+        source_name: sourceName,
+        url: newsUrl,
+        publishedAt,
+        language,
+        // 让 upsertNewsFromWorkflowItem 自己基于 title/url/publishedAt 兜底计算 news_uid
+        news_uid: item?.news_uid || item?.newsUid || item?.uniqueId || null,
+      })
+
+      const inputJson = item?.input || item?.input_json || item?.request || item?.raw_input || null
+      const outputJson = item?.output || item?.output_json || item?.analysis || item?.result || item?.full || item
+
+      const [ar] = await pool.execute(
+        `
+          INSERT INTO analysis_records (
+            user_id, news_id, analysis_type, input_json, output_json, fake_score, risk_level
+          ) VALUES (?, ?, 'single', ?, ?, ?, ?)
+        `,
+        [uid, newsId || null, JSON.stringify(inputJson || { workflowItem: item }), JSON.stringify(outputJson), fakeScore, riskLevel],
+      )
+
+      const finalNewsTitle = title || item?.headline || `工作流新闻 ${String(newsId || newsUid).slice(0, 8)}`
+      const finalNewsSummary = newsSummary
+        ? clampSummaryChars(String(newsSummary), 100)
+        : clampSummaryChars(content ? content.slice(0, 100) : finalNewsTitle.slice(0, 100), 100)
+
+      await insertQueryHistory({
+        userId: uid,
+        queryType: '百炼工作流',
+        newsTitle: finalNewsTitle,
+        newsSummary: finalNewsSummary,
+        newsBody: cleanArticleText(content),
+        sourceUrl: newsUrl,
+        sourceName,
+        fullAnalysisJson: outputJson,
+        status: 'success',
+        analysisRecordId: ar.insertId,
+      })
+
+      if (alertRule.enabled && fakeScore >= alertRule.riskThreshold) {
+        await pool.execute(
+          `
+            INSERT INTO alerts (analysis_id, title, source_name, risk_level, score, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `,
+          [ar.insertId, '高风险新闻工作流命中', sourceName || 'workflow', riskLevel, fakeScore, JSON.stringify(outputJson)],
+        )
+      }
+
+      storedCount += 1
+    }
+
+    return res.json(success({ storedCount }))
+  } catch (error) {
+    const msg =
+      error?.response?.data?.message ||
+      error?.response?.data?.error?.message ||
+      error?.message ||
+      '调用百炼工作流失败'
+    return res.status(502).json(fail(msg, 502, 'WORKFLOW_CALL_ERROR'))
+  }
+}
+
+app.post('/api/v1/run-news-workflow', runNewsWorkflowHandler)
+app.post('/api/run-news-workflow', runNewsWorkflowHandler)
 
 app.get('/', (_req, res) => {
   res.json(
