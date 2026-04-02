@@ -1,18 +1,33 @@
 <script setup>
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { fetchNewsList } from '../api/news'
 
 const router = useRouter()
+const newsList = ref([])
+const isLoading = ref(false)
+const errorMessage = ref('')
 
-const newsList = [
-  { id: 1, title: '多国媒体关注中国新能源合作进展', source: 'Global Times', risk: '低风险' },
-  { id: 2, title: '某社交平台传播涉华不实经济数据', source: 'World Echo', risk: '高风险' },
-  { id: 3, title: '国际机构发布区域贸易新报告', source: 'Reuters', risk: '中风险' },
-  { id: 4, title: '海外论坛热议中国科技企业新产品', source: 'Tech Daily', risk: '中风险' },
-]
+const loadNews = async () => {
+  isLoading.value = true
+  errorMessage.value = ''
+  try {
+    newsList.value = await fetchNewsList({ page: 1, pageSize: 20 })
+  } catch (error) {
+    errorMessage.value = error?.message || '新闻加载失败'
+  } finally {
+    isLoading.value = false
+  }
+}
 
 const toDetail = (item) => {
-  router.push({ name: 'analysis', query: { title: item.title } })
+  router.push({
+    name: 'analysis',
+    query: { title: item.title, newsId: item.id != null ? String(item.id) : undefined },
+  })
 }
+
+onMounted(loadNews)
 </script>
 
 <template>
@@ -21,6 +36,7 @@ const toDetail = (item) => {
       <div class="title">新闻门户</div>
       <nav>
         <span class="dot active" @click="router.push('/portal')">总览</span>
+        <span class="dot" @click="router.push('/dashboard')">监控大屏</span>
         <span class="dot" @click="router.push('/analysis')">单篇分析</span>
         <span class="dot" @click="router.push('/multi-analysis')">多篇分析</span>
         <span class="dot" @click="router.push('/profile')">个人中心</span>
@@ -32,6 +48,8 @@ const toDetail = (item) => {
       <section class="card feed-area anim-up">
         <h2>NewsAPI 信息流</h2>
         <p class="desc">被动首页，新闻源来自 NewsAPI，点击卡片进入多源分析。</p>
+        <p v-if="isLoading" class="desc">加载中...</p>
+        <p v-if="errorMessage" class="desc danger">{{ errorMessage }}</p>
         <div class="news-grid">
           <article v-for="item in newsList" :key="item.id" class="news-card" @click="toDetail(item)">
             <div class="badge">{{ item.risk }}</div>

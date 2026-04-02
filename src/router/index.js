@@ -4,6 +4,7 @@ import NewsPortalView from '../views/NewsPortalView.vue'
 import NewsAnalysisView from '../views/NewsAnalysisView.vue'
 import MultiAnalysisView from '../views/MultiAnalysisView.vue'
 import ProfileView from '../views/ProfileView.vue'
+import DashboardView from '../views/DashboardView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -14,6 +15,7 @@ const router = createRouter({
     { path: '/analysis', name: 'analysis', component: NewsAnalysisView },
     { path: '/multi-analysis', name: 'multi-analysis', component: MultiAnalysisView },
     { path: '/profile', name: 'profile', component: ProfileView },
+    { path: '/dashboard', name: 'dashboard', component: DashboardView },
   ],
 })
 

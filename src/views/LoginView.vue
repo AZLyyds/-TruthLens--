@@ -1,16 +1,46 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { login as loginApi } from '../api/auth'
 
 const router = useRouter()
 const form = ref({
   username: '',
   password: '',
 })
+const errorMessage = ref('')
+const isSubmitting = ref(false)
 
-const login = () => {
-  if (!form.value.username || !form.value.password) return
-  router.push('/portal')
+const login = async () => {
+  if (!form.value.username) return
+  isSubmitting.value = true
+  errorMessage.value = ''
+  try {
+    const useMock = import.meta.env.VITE_USE_MOCK === 'true'
+    const password = form.value.password || 'demo123'
+    let result = null
+    if (!useMock) {
+      result = await loginApi({
+        username: form.value.username,
+        password,
+      })
+    }
+    if (result?.userId != null) {
+      localStorage.setItem('truthlens_user_id', String(result.userId))
+    }
+    if (result?.accessToken) {
+      localStorage.setItem('truthlens_access_token', result.accessToken)
+    }
+    if (result?.refreshToken) {
+      localStorage.setItem('truthlens_refresh_token', result.refreshToken)
+    }
+    localStorage.setItem('truthlens_username', form.value.username)
+    router.push('/portal')
+  } catch (error) {
+    errorMessage.value = error?.message || '登录失败，请稍后重试'
+  } finally {
+    isSubmitting.value = false
+  }
 }
 </script>
 
@@ -25,9 +55,10 @@ const login = () => {
           <form class="login-form" @submit.prevent="login">
             <input v-model="form.username" type="text" placeholder="用户名 / 邮箱" />
             <input v-model="form.password" type="password" placeholder="密码" />
-            <button type="submit">登录</button>
+            <button type="submit" :disabled="isSubmitting">{{ isSubmitting ? '登录中...' : '登录' }}</button>
           </form>
-          <div class="tips">演示环境：任意输入即可进入首页</div>
+          <div v-if="errorMessage" class="danger">{{ errorMessage }}</div>
+          <div class="tips">演示账号：用户名 demo，密码 demo123；密码可留空时将使用默认密码</div>
         </div>
 
         <aside class="login-side">

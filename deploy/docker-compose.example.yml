@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: truthlens-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: truthlens
+      MYSQL_USER: truthlens
+      MYSQL_PASSWORD: truthlens
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  backend:
+    image: node:20-alpine
+    container_name: truthlens-backend
+    working_dir: /app
+    command: sh -c "npm ci && npm run start"
+    volumes:
+      - ../backend:/app
+    environment:
+      PORT: 3000
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: truthlens
+      DB_PASSWORD: truthlens
+      DB_NAME: truthlens
+    depends_on:
+      - mysql
+    ports:
+      - "3000:3000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: truthlens-nginx
+    volumes:
+      - ../dist:/var/www/truthlens/dist:ro
+      - ./nginx/truthlens.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+
+volumes:
+  mysql_data:
