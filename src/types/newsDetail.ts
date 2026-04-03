@@ -1,11 +1,18 @@
 /** 新闻详情 API（/news/:id）归一化结构，字段缺省时前端容错渲染 */
 
+/** MCP 相关报道条目（与后端 multiSourceCheck.mcpRelatedArticles 一致） */
+export interface McpRelatedArticleRef {
+  title: string
+  source: string
+}
+
+/** 工作流 multiSourceCheck（仅五字段，与后端 output_json.multiSourceCheck 一致） */
 export interface NewsMultiSourceCheck {
-  consistencyLabel: string
-  consistencyScore: number | null
-  authorityLabel: string
-  authorityNote: string
-  sourcesCompared: number
+  isSameEvent: boolean | null
+  isConsistent: string | null
+  hasAuthoritySource: boolean | null
+  description: string
+  mcpRelatedArticles: McpRelatedArticleRef[]
 }
 
 export interface NewsDetailLatestAnalysis {

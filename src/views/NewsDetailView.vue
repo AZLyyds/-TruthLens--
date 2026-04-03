@@ -84,6 +84,28 @@ const fakePct = computed(() => {
   return (clamped / 10) * 100
 })
 
+const ms = computed(() => {
+  const m = detail.value?.multiSourceCheck
+  if (!m || typeof m !== 'object') return null
+  return m
+})
+
+function fmtMsBool(v) {
+  if (v === true) return '是'
+  if (v === false) return '否'
+  return '—'
+}
+
+function mcpArticlesList(m) {
+  const raw = m?.mcpRelatedArticles
+  return Array.isArray(raw) ? raw : []
+}
+
+function fmtConsistent(v) {
+  if (v == null || v === '') return '—'
+  return String(v)
+}
+
 async function loadRelated(current) {
   try {
     const list = await fetchNewsList({ page: 1, pageSize: 120 })
@@ -289,33 +311,38 @@ onMounted(() => {
         <section class="nd-card card">
           <header class="nd-sec-head">
             <h3>多源核验</h3>
-            <span class="nd-sec-sub">一致性 · 信源权威性</span>
           </header>
-          <div v-if="detail.multiSourceCheck" class="nd-ms">
-            <div class="nd-ms-item">
-              <span class="nd-ms-ico" aria-hidden="true">◇</span>
-              <div>
-                <span class="nd-ms-label">一致性</span>
-                <p class="nd-ms-val">{{ detail.multiSourceCheck.consistencyLabel }}</p>
-                <p class="nd-ms-note">
-                  <template v-if="detail.multiSourceCheck.consistencyScore != null">
-                    一致性参考分值 {{ detail.multiSourceCheck.consistencyScore }}（越高表示叙事对齐度越好，供辅助判断）
-                  </template>
-                  <template v-else> 尚无量化分值，完成深度分析后将参考维度模型给出。 </template>
-                </p>
+          <div v-if="ms" class="nd-ms">
+            <div class="nd-ms-mcp">
+              <div class="nd-ms-kpi">
+                <div class="nd-ms-kpi-cell">
+                  <span class="nd-ms-kpi-k">是否为同一事件</span>
+                  <span class="nd-ms-kpi-v">{{ fmtMsBool(ms.isSameEvent) }}</span>
+                </div>
+                <div class="nd-ms-kpi-cell">
+                  <span class="nd-ms-kpi-k">信息一致性</span>
+                  <span class="nd-ms-kpi-v">{{ fmtConsistent(ms.isConsistent) }}</span>
+                </div>
+                <div class="nd-ms-kpi-cell">
+                  <span class="nd-ms-kpi-k">是否存在权威信源</span>
+                  <span class="nd-ms-kpi-v">{{ fmtMsBool(ms.hasAuthoritySource) }}</span>
+                </div>
               </div>
-            </div>
-            <div class="nd-ms-item">
-              <span class="nd-ms-ico nd-ms-ico--b" aria-hidden="true">◎</span>
-              <div>
-                <span class="nd-ms-label">信源权威性</span>
-                <p class="nd-ms-val">{{ detail.multiSourceCheck.authorityLabel }}</p>
-                <p class="nd-ms-note">{{ detail.multiSourceCheck.authorityNote }}</p>
+
+              <div class="nd-ms-block">
+                <span class="nd-ms-block-title">写实核查说明</span>
+                <div class="nd-ms-desc">{{ ms.description }}</div>
               </div>
-            </div>
-            <div class="nd-ms-foot">
-              比对信源数：
-              <strong>{{ detail.multiSourceCheck.sourcesCompared }}</strong>
+
+              <div class="nd-ms-block">
+                <span class="nd-ms-block-title">相关报道（MCP）</span>
+                <ul v-if="mcpArticlesList(ms).length" class="nd-ms-art-list nd-ms-art-list--plain">
+                  <li v-for="(row, idx) in mcpArticlesList(ms)" :key="idx" class="nd-ms-art-line">
+                    {{ row?.title }} - {{ row?.source }}
+                  </li>
+                </ul>
+                <p v-else class="nd-ms-empty">暂无 MCP 相关报道</p>
+              </div>
             </div>
           </div>
           <p v-else class="nd-muted">暂无多源核验数据</p>
@@ -738,62 +765,132 @@ onMounted(() => {
   gap: 14px;
 }
 
-.nd-ms-item {
+.nd-ms-mcp {
   display: flex;
-  gap: 12px;
-  padding: 14px;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.nd-ms-kpi {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .nd-ms-kpi {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nd-ms-kpi-cell {
+  padding: 12px 14px;
   border-radius: 12px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
 }
 
-.nd-ms-ico {
-  flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  background: #dbeafe;
-  color: #1d4ed8;
-  font-size: 15px;
-}
-
-.nd-ms-ico--b {
-  background: #e0e7ff;
-  color: #4338ca;
-}
-
-.nd-ms-label {
+.nd-ms-kpi-k {
+  display: block;
+  margin-bottom: 8px;
   font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: #64748b;
 }
 
-.nd-ms-val {
-  margin: 4px 0 6px;
-  font-size: 16px;
+.nd-ms-kpi-v {
+  display: block;
+  font-size: 15px;
   font-weight: 600;
+  line-height: 1.4;
   color: #0f172a;
+  word-break: break-word;
 }
 
-.nd-ms-note {
+.nd-ms-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nd-ms-block-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.nd-ms-desc {
   margin: 0;
-  font-size: 13px;
-  line-height: 1.5;
-  color: #64748b;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  font-size: 14px;
+  line-height: 1.75;
+  color: #1e293b;
+  white-space: pre-wrap;
 }
 
-.nd-ms-foot {
+.nd-ms-empty {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px dashed #cbd5e1;
+  background: #fafafa;
   font-size: 13px;
-  color: #64748b;
+  line-height: 1.55;
+  color: #94a3b8;
 }
 
-.nd-ms-foot strong {
+.nd-ms-art-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nd-ms-art {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+}
+
+.nd-ms-art-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
   color: #0f172a;
-  font-variant-numeric: tabular-nums;
+}
+
+.nd-ms-art-src {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.nd-ms-art-list--plain {
+  gap: 0;
+}
+
+.nd-ms-art-line {
+  margin: 0;
+  padding: 10px 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #0f172a;
+  border-bottom: 1px solid #f1f5f9;
+  list-style: none;
+}
+
+.nd-ms-art-line:last-child {
+  border-bottom: none;
 }
 
 .nd-muted {

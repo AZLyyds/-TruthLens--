@@ -44,11 +44,14 @@ function mockNewsDetail(id) {
     suggestions: mockSingleAnalysis.suggestions || [],
     dimensions: mockSingleAnalysis.dimensions,
     multiSourceCheck: {
-      consistencyLabel: '部分一致',
-      consistencyScore: mockSingleAnalysis.dimensions?.factConsistency ?? 65,
-      authorityLabel: '信源参差',
-      authorityNote: '基于 Mock 数据：事实一致性、来源可信度维度来自最近一次示例分析。',
-      sourcesCompared: 3,
+      isSameEvent: true,
+      isConsistent: '基本一致',
+      hasAuthoritySource: true,
+      description: '【Mock】写实核查说明示例：与后端 multiSourceCheck.description 字段对齐，仅用于离线布局。',
+      mcpRelatedArticles: [
+        { title: '示例相关报道 A', source: '示例来源 A' },
+        { title: '示例相关报道 B', source: '示例来源 B' },
+      ],
     },
     latestAnalysis: {
       fakeScore,

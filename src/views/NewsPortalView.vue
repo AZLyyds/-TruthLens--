@@ -232,7 +232,20 @@ async function triggerWorkflow() {
       requestedAt: new Date().toISOString(),
       timeoutMs: 360000,
     })
-    workflowStatus.value = `工作流触发成功：已写入 ${result?.storedCount ?? 0} 条结果。`
+    let msg = `工作流触发成功：已写入 ${result?.storedCount ?? 0} 条结果。`
+    const w = result?.workflow
+    if (w && typeof w === 'object') {
+      const bits = []
+      if (w.newsCount != null) bits.push(`抓取 ${w.newsCount} 条`)
+      if (w.duplicateRemovedCount != null) bits.push(`去重后 ${w.duplicateRemovedCount} 条`)
+      if (w.overallRiskLevel) bits.push(`整体 ${String(w.overallRiskLevel)}`)
+      if (bits.length) msg += `（${bits.join('，')}）`
+      if (w.overallConclusion) {
+        const c = String(w.overallConclusion)
+        msg += ` ${c.length > 200 ? `${c.slice(0, 200)}…` : c}`
+      }
+    }
+    workflowStatus.value = msg
     await loadNews()
     await loadOverview()
   } catch (e) {

@@ -575,18 +575,20 @@ app.get('/api/v1/news', async (req, res) => {
           : out.overall_risk != null && !Number.isNaN(Number(out.overall_risk))
             ? Number(out.overall_risk)
             : null)
-    const riskLevel =
+    const rawRisk =
       row.risk ||
       out.riskLevel ||
       out.risk_level ||
       (out.risk && typeof out.risk === 'string' ? out.risk : null) ||
-      normalizeRiskLevel(null, fakeScore)
+      null
+    const riskLevel =
+      normalizeRiskLevel(rawRisk, fakeScore) ?? normalizeRiskLevel(null, fakeScore) ?? '未评级'
     return {
       id: row.id,
       title: row.title,
       source: row.source,
       publishedAt: row.publishedAt,
-      risk: riskLevel || null,
+      risk: riskLevel,
       fakeScore: fakeScore ?? null,
     }
   })
@@ -603,32 +605,106 @@ function parseJsonSafe(v, fallback = {}) {
   }
 }
 
+/** 响应体 JSON 序列化前使用，避免 output_json 内循环引用导致整条接口 500 */
+function cloneForJsonResponse(obj) {
+  if (obj == null) return obj
+  if (typeof obj !== 'object') return obj
+  try {
+    return JSON.parse(JSON.stringify(obj))
+  } catch {
+    return null
+  }
+}
+
 function inferChinaRelated(title, content) {
   const t = `${title || ''} ${String(content || '').slice(0, 800)}`
   return /中国|中华|涉华|对华|北京|中共|两岸|港台|\bCN\b|Chinese|china/i.test(t)
 }
 
-function buildMultiSourceCheck(raw, latestOut) {
-  const existing = raw.multiSourceCheck ?? raw.multi_source_check
-  if (existing && typeof existing === 'object') return existing
-  const dim = latestOut?.dimensions
-  if (!dim) {
-    return {
-      consistencyLabel: '待核验',
-      consistencyScore: null,
-      authorityLabel: '暂无分析记录',
-      authorityNote: '完成一次「单篇深度分析」后，将在此展示多源一致性与信源权威性评估。',
-      sourcesCompared: Number(raw.sourcesCompared ?? raw.sources_compared ?? 0) || 0,
-    }
+/**
+ * 百炼单条新闻入库前合并：条目根上的 multiSourceCheck 不要被错误的 item.result 覆盖。
+ * item.result 若为多新闻批次外壳（含 newsAnalysis / newsCount），不得当作单条分析体。
+ */
+function mergeWorkflowItemForStorage(item) {
+  if (!item || typeof item !== 'object') return item
+  const resultVal = item.result
+  const resultIsBatchEnvelope =
+    resultVal &&
+    typeof resultVal === 'object' &&
+    (Array.isArray(resultVal.newsAnalysis) ||
+      resultVal.newsCount != null ||
+      resultVal.duplicateRemovedCount != null ||
+      resultVal.overallConclusion != null)
+
+  let inner = item.output || item.output_json || item.analysis || item.full || null
+  if (!inner && resultVal && typeof resultVal === 'object' && !resultIsBatchEnvelope) {
+    inner = resultVal
   }
-  const fact = Number(dim.factConsistency ?? 0)
-  const src = Number(dim.sourceCredibility ?? 0)
+  function hoistMsc(obj) {
+    if (!obj || typeof obj !== 'object') return obj
+    if (obj.multiSourceCheck == null && obj.multi_source_check != null) {
+      obj.multiSourceCheck = obj.multi_source_check
+    }
+    return obj
+  }
+
+  if (inner && typeof inner === 'object') {
+    return hoistMsc({ ...inner, ...item })
+  }
+  return hoistMsc({ ...item })
+}
+
+/**
+ * 详情页 multiSourceCheck：仅透传工作流写入的五个字段，不做兜底拼接、不注入当前新闻、不臆造枚举文案。
+ */
+function pickMultiSourceCheckStrict(outputObj) {
+  const raw = outputObj && typeof outputObj === 'object' ? outputObj : {}
+  const hasKey =
+    Object.prototype.hasOwnProperty.call(raw, 'multiSourceCheck') ||
+    Object.prototype.hasOwnProperty.call(raw, 'multi_source_check')
+  if (!hasKey) return null
+  let m = raw.multiSourceCheck ?? raw.multi_source_check
+  if (m == null) return null
+  if (typeof m === 'string') {
+    m = parseJsonSafe(m, null)
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return null
+  }
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return null
+
+  const rawArticles = m.mcpRelatedArticles ?? m.mcp_related_articles
+  const mcpRelatedArticles = Array.isArray(rawArticles)
+    ? rawArticles.map((x) => ({
+        title: x?.title != null ? String(x.title) : '',
+        source: x?.source != null ? String(x.source) : '',
+      }))
+    : []
+
+  const isSameEvent =
+    typeof m.isSameEvent === 'boolean'
+      ? m.isSameEvent
+      : typeof m.is_same_event === 'boolean'
+        ? m.is_same_event
+        : null
+
+  const hasAuthoritySource =
+    typeof m.hasAuthoritySource === 'boolean'
+      ? m.hasAuthoritySource
+      : typeof m.has_authority_source === 'boolean'
+        ? m.has_authority_source
+        : null
+
+  let isConsistent = m.isConsistent ?? m.is_consistent
+  if (isConsistent != null && isConsistent !== '') isConsistent = String(isConsistent).trim()
+  else isConsistent = null
+
+  const description = m.description != null ? String(m.description) : ''
+
   return {
-    consistencyLabel: fact >= 70 ? '高度一致' : fact >= 45 ? '部分一致' : '待交叉核验',
-    consistencyScore: fact,
-    authorityLabel: src >= 70 ? '信源较权威' : src >= 45 ? '信源参差' : '需谨慎采信',
-    authorityNote: `事实一致性维度 ${fact}，来源可信度维度 ${src}（基于最近一次深度分析）。`,
-    sourcesCompared: Number(raw.sourcesCompared ?? raw.sources_compared ?? 1) || 1,
+    isSameEvent,
+    isConsistent,
+    hasAuthoritySource,
+    description,
+    mcpRelatedArticles,
   }
 }
 
@@ -641,7 +717,22 @@ function pickRiskReason(latest, raw) {
   return txt ? String(txt) : ''
 }
 
-app.get('/api/v1/news/:id', async (req, res) => {
+/** 详情页展示：统一为 0–10（工作流协议）；库内可能为 0–100 百分制 */
+function normalizeDetailFakeScore(dbStored, outputObj) {
+  const out = outputObj?.fakeScore ?? outputObj?.fake_score
+  if (out != null && !Number.isNaN(Number(out)) && Number(out) <= 10) return Number(out)
+  const fs = Number(dbStored)
+  if (!Number.isNaN(fs)) {
+    if (fs > 10) return fs / 10
+    return fs
+  }
+  if (out != null && !Number.isNaN(Number(out))) return Number(out)
+  if (outputObj?.overall_risk != null && !Number.isNaN(Number(outputObj.overall_risk))) return Number(outputObj.overall_risk)
+  return null
+}
+
+app.get('/api/v1/news/:id', async (req, res, next) => {
+  try {
   const rawId = req.params.id
   const id = Number(rawId)
   if (!Number.isFinite(id) || id <= 0) {
@@ -701,34 +792,36 @@ app.get('/api/v1/news/:id', async (req, res) => {
   }
 
   const lang = row.language || 'unknown'
-  const chinaRelated = inferChinaRelated(row.title, row.content)
+  const chinaRelated =
+    outputObj.chinaRelated != null
+      ? Boolean(outputObj.chinaRelated)
+      : inferChinaRelated(row.title, row.content)
 
-  const fakeScore =
-    latestAnalysis?.fakeScore ??
-    (outputObj.fakeScore != null
-      ? Number(outputObj.fakeScore)
-      : outputObj.fake_score != null
-        ? Number(outputObj.fake_score)
-        : outputObj.overall_risk != null
-          ? Number(outputObj.overall_risk)
-          : null)
+  const dbFake = arRows.length ? arRows[0].fakeScore : null
+  const fakeScore = normalizeDetailFakeScore(dbFake, outputObj)
 
-  const riskLevel = latestAnalysis?.riskLevel ?? outputObj.riskLevel ?? outputObj.risk_level ?? outputObj.risk ?? null
+  const rawRiskDetail =
+    latestAnalysis?.riskLevel ?? outputObj.riskLevel ?? outputObj.risk_level ?? outputObj.risk ?? null
+  const riskLevel =
+    normalizeRiskLevel(rawRiskDetail, fakeScore) ?? normalizeRiskLevel(null, fakeScore) ?? '未评级'
 
   const credibilityScore =
     latestAnalysis?.credibilityScore ??
-    (fakeScore != null && !Number.isNaN(fakeScore) ? Number((100 - Number(fakeScore)).toFixed(2)) : null)
+    outputObj.credibilityScore ??
+    (fakeScore != null && !Number.isNaN(Number(fakeScore))
+      ? Number((100 - Number(fakeScore) * 10).toFixed(2))
+      : null)
 
   const payload = {
     id: row.id,
     newsUid: row.newsUid,
     title: row.title,
-    titleCN: null,
+    titleCN: outputObj.titleCN ?? outputObj.title_cn ?? null,
     summary: row.description || '',
     source: row.source,
     url: row.url,
     content: row.content,
-    contentCN: null,
+    contentCN: outputObj.contentCN ?? outputObj.content_cn ?? null,
     description: row.description,
     publishedAt: row.publishedAt,
     lang,
@@ -738,18 +831,22 @@ app.get('/api/v1/news/:id', async (req, res) => {
     facts: latestAnalysis?.facts ?? outputObj.facts ?? [],
     fakeScore,
     riskLevel,
-    riskReason: pickRiskReason(latestAnalysis ? { ...latestAnalysis, risk: outputObj.risk } : {}, {}),
-    multiSourceCheck: buildMultiSourceCheck({}, outputObj),
+    riskReason: pickRiskReason(latestAnalysis ? { ...latestAnalysis, risk: outputObj.risk } : {}, outputObj),
+    multiSourceCheck: pickMultiSourceCheckStrict(outputObj),
     credibilityScore,
     verdict: latestAnalysis?.verdict ?? null,
     reasons: latestAnalysis?.reasons ?? outputObj.reasons ?? [],
     suggestions: latestAnalysis?.suggestions ?? outputObj.suggestions ?? [],
     dimensions: latestAnalysis?.dimensions ?? outputObj.dimensions ?? null,
     latestAnalysis,
-    rawWorkflow: null,
+    rawWorkflow: cloneForJsonResponse(outputObj),
   }
 
   res.json(success(payload))
+  } catch (err) {
+    console.error('GET /api/v1/news/:id failed:', err?.stack || err?.message || err)
+    next(err)
+  }
 })
 
 app.post('/api/v1/news', async (req, res) => {
@@ -1400,36 +1497,82 @@ function extractJsonFromText(raw) {
   return null
 }
 
-function normalizeDashscopeWorkflowItems(workflowJson) {
-  const obj = workflowJson
+function tryParseJsonString(s) {
+  if (s == null || typeof s !== 'string') return null
+  try {
+    return JSON.parse(s)
+  } catch {
+    return null
+  }
+}
+
+/** 旧版 / 兜底：从任意对象里抽出“新闻条目数组” */
+function normalizeDashscopeWorkflowItemsLegacy(obj) {
   if (!obj) return []
   if (Array.isArray(obj)) return obj
-  // 直接支持你当前约定的顶层格式：{ newsAnalysis: [...] }
   if (Array.isArray(obj.newsAnalysis)) return obj.newsAnalysis
-  // 百炼工作流常见返回形态：{ res3: { res: "{...newsAnalysis:[...]}" } }
-  if (obj?.res3?.res && typeof obj.res3.res === 'string') {
-    const tryParse = (s) => {
-      try {
-        return JSON.parse(s)
-      } catch {
-        return null
-      }
-    }
-    // res3.res 通常是“字符串形式的 JSON”，可能会有前后额外字符，因此先直接 parse，再回退到截取解析
-    const inner = tryParse(obj.res3.res) || extractJsonFromText(obj.res3.res)
-    if (Array.isArray(inner?.newsAnalysis)) return inner.newsAnalysis
-    if (Array.isArray(inner?.items)) return inner.items
-    if (Array.isArray(inner?.results)) return inner.results
-    if (Array.isArray(inner?.news)) return inner.news
-  }
   if (Array.isArray(obj.items)) return obj.items
   if (Array.isArray(obj.results)) return obj.results
   if (Array.isArray(obj.news)) return obj.news
   if (Array.isArray(obj.data?.items)) return obj.data.items
   if (obj.news && Array.isArray(obj.news.items)) return obj.news.items
-  // 单条对象也尽量处理为 1 条
   if (obj.title || obj.content || obj.url || obj.news_uid || obj.newsUid) return [obj]
   return []
+}
+
+/**
+ * 解析百炼工作流 JSON（新约定优先）：
+ * - { result: { newsCount, duplicateRemovedCount, newsAnalysis, overallRiskLevel, overallConclusion } }
+ * - 或顶层平铺：同上字段但无 result 包裹
+ * - 兼容旧版 { res3: { res: "..." } } 字符串内嵌 JSON
+ * @returns {{ items: any[], meta: object | null }}
+ */
+function extractWorkflowResult(workflowJson) {
+  const empty = { items: [], meta: null }
+  if (workflowJson == null) return empty
+
+  const metaFrom = (obj) => {
+    if (!obj || typeof obj !== 'object') return null
+    const hasMeta =
+      obj.newsCount != null ||
+      obj.duplicateRemovedCount != null ||
+      obj.overallRiskLevel != null ||
+      obj.overallConclusion != null
+    if (!hasMeta) return null
+    return {
+      newsCount: obj.newsCount ?? null,
+      duplicateRemovedCount: obj.duplicateRemovedCount ?? null,
+      overallRiskLevel: obj.overallRiskLevel ?? null,
+      overallConclusion: obj.overallConclusion ?? null,
+    }
+  }
+
+  // 新格式：result 包裹
+  if (workflowJson.result && typeof workflowJson.result === 'object') {
+    const r = workflowJson.result
+    if (Array.isArray(r.newsAnalysis)) {
+      return { items: r.newsAnalysis, meta: metaFrom(r) }
+    }
+  }
+
+  // 新格式：顶层平铺（无 result）
+  if (Array.isArray(workflowJson.newsAnalysis)) {
+    return { items: workflowJson.newsAnalysis, meta: metaFrom(workflowJson) }
+  }
+
+  // 旧版：res3.res 为字符串 JSON
+  if (workflowJson.res3?.res && typeof workflowJson.res3.res === 'string') {
+    const inner = tryParseJsonString(workflowJson.res3.res) || extractJsonFromText(workflowJson.res3.res)
+    if (inner && typeof inner === 'object') {
+      const nested = extractWorkflowResult(inner)
+      if (nested.items.length) return nested
+      const legacy = normalizeDashscopeWorkflowItemsLegacy(inner)
+      if (legacy.length) return { items: legacy, meta: null }
+    }
+  }
+
+  const legacy = normalizeDashscopeWorkflowItemsLegacy(workflowJson)
+  return { items: legacy, meta: null }
 }
 
 function toMysqlDateTime(value) {
@@ -1441,6 +1584,13 @@ function toMysqlDateTime(value) {
 
 function normalizeRiskLevel(riskLevel, fakeScore) {
   const v = String(riskLevel || '').trim()
+  if (v === '待评估' || v === '未知' || /^pending$/i.test(v)) {
+    const score = Number(fakeScore)
+    if (!Number.isNaN(score)) {
+      return score >= 70 ? '高风险' : score >= 45 ? '中风险' : '低风险'
+    }
+    return null
+  }
   if (['低风险', '中风险', '高风险'].includes(v)) return v
   if (/^low$/i.test(v) || /^Low$/i.test(v)) return '低风险'
   if (/^medium$/i.test(v) || /^Medium$/i.test(v)) return '中风险'
@@ -1464,24 +1614,52 @@ function computeNewsUid({ uniqueId, url, title, publishedAt }) {
   return createHash('sha1').update(String(Date.now() + Math.random())).digest('hex')
 }
 
-async function upsertNewsFromWorkflowItem(item) {
+/** 百炼一批次内「条条入库、不去重」：每条唯一 news_uid，且 url 加片段满足 UNIQUE(url) */
+function computeWorkflowNewsUid(item, runSalt, itemIndex) {
+  const title = String(item?.titleCN || item?.title_cn || item?.title || item?.newsTitle || '').trim()
+  const url = item?.url || item?.link || item?.source_url || null
+  const publishedAt = item?.published_at || item?.publishedAt || item?.time || null
+  const basis = [runSalt, String(itemIndex), item?.news_uid, item?.newsUid, url, title, publishedAt]
+    .filter((x) => x != null && x !== '')
+    .join('|')
+  return createHash('sha1').update(basis || `${runSalt}|${itemIndex}`).digest('hex')
+}
+
+function workflowUniqueDbUrl(canonicalUrl, runSalt, itemIndex) {
+  if (!canonicalUrl || typeof canonicalUrl !== 'string' || !canonicalUrl.trim()) return null
+  const base = canonicalUrl.trim().replace(/#.*$/, '')
+  const tag = `${String(itemIndex)}-${runSalt.replace(/-/g, '').slice(0, 12)}`
+  return `${base}#tlwf-${tag}`
+}
+
+async function upsertNewsFromWorkflowItem(item, workflowOpts = null) {
   const title = String(item?.titleCN || item?.title_cn || item?.title || item?.newsTitle || '').trim()
   const content = item?.content || item?.body || item?.article || ''
   const description = item?.description || item?.summary || null
   const sourceName = item?.source_name || item?.sourceName || item?.source || null
-  const url = item?.url || item?.link || item?.source_url || null
+  const canonicalUrl = item?.url || item?.link || item?.source_url || null
   const language = item?.language || item?.lang || 'unknown'
   const publishedAt = item?.published_at || item?.publishedAt || item?.time || null
-  const newsUid = computeNewsUid({
-    uniqueId: item?.news_uid || item?.newsUid || item?.uniqueId || item?.uid || item?.id,
-    url,
-    title,
-    publishedAt,
-  })
+
+  let newsUid
+  let storageUrl = canonicalUrl
+  if (workflowOpts?.runSalt != null) {
+    const idx = Number(workflowOpts.itemIndex)
+    newsUid = computeWorkflowNewsUid(item, workflowOpts.runSalt, Number.isFinite(idx) ? idx : 0)
+    storageUrl = workflowUniqueDbUrl(canonicalUrl, workflowOpts.runSalt, Number.isFinite(idx) ? idx : 0)
+  } else {
+    newsUid = computeNewsUid({
+      uniqueId: item?.news_uid || item?.newsUid || item?.uniqueId || item?.uid || item?.id,
+      url: canonicalUrl,
+      title,
+      publishedAt,
+    })
+  }
 
   if (!newsUid) throw new Error('workflow item 缺少新闻唯一ID')
 
-  const cleanContent = cleanArticleText(String(content || ''))
+  const bodyText = String(item?.contentCN || item?.content_cn || content || '')
+  const cleanContent = cleanArticleText(bodyText)
   const cleanDescription = description ? cleanArticleText(String(description)) : null
 
   await pool.execute(
@@ -1500,11 +1678,11 @@ async function upsertNewsFromWorkflowItem(item) {
     `,
     [
       newsUid,
-      title || (url ? url.slice(0, 80) : '新闻工作流分析'),
+      title || (canonicalUrl ? String(canonicalUrl).slice(0, 80) : '新闻工作流分析'),
       cleanDescription,
       cleanContent || null,
       sourceName,
-      url,
+      storageUrl,
       language,
       toMysqlDateTime(publishedAt),
     ],
@@ -1566,72 +1744,69 @@ async function runNewsWorkflowHandler(req, res) {
     }
     if (!parsed) parsed = extractJsonFromText(workflowText)
     if (!parsed) parsed = response?.data
-    const items = normalizeDashscopeWorkflowItems(parsed)
+    const { items, meta: workflowMeta } = extractWorkflowResult(parsed)
 
     if (!items.length) {
       return res.status(502).json(fail('工作流未返回可解析的新闻结果', 502, 'WORKFLOW_PARSE_ERROR'))
     }
 
+    // 本批次内条条独立入库，不按 url/news_uid 与历史或彼此合并（10 条就写 10 行）
+    const workflowRunSalt = randomUUID()
+
     let storedCount = 0
 
-    for (const item of items) {
-      const title = String(item?.titleCN || item?.title_cn || item?.title || item?.newsTitle || '').trim()
-      const content = String(item?.content || item?.body || item?.article || '')
-      const sourceName = item?.source_name || item?.sourceName || item?.source || null
-      const newsUrl = item?.url || item?.link || item?.source_url || null
-      const publishedAt = item?.published_at || item?.publishedAt || item?.time || null
-      const language = item?.language || item?.lang || null
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      const item = items[itemIndex]
+      const merged = mergeWorkflowItemForStorage(item)
+      const title = String(merged?.titleCN || merged?.title_cn || merged?.title || merged?.newsTitle || '').trim()
+      const content = String(merged?.contentCN || merged?.content_cn || merged?.content || merged?.body || merged?.article || '')
+      const sourceName = merged?.source_name || merged?.sourceName || merged?.source || null
+      const newsUrl = merged?.url || merged?.link || merged?.source_url || null
+      const publishedAt = merged?.published_at || merged?.publishedAt || merged?.time || null
+      const language = merged?.language || merged?.lang || null
 
-      const newsSummary = item?.summary || item?.newsSummary || item?.ai_summary || item?.aiSummary || null
+      const newsSummary = merged?.summary || merged?.newsSummary || merged?.ai_summary || merged?.aiSummary || null
 
-      const outputJson = item?.output || item?.output_json || item?.analysis || item?.result || item?.full || item
-      const outputObj = typeof outputJson === 'object' && outputJson ? outputJson : parseJsonSafe(outputJson, {})
+      const outputJson = merged
+      const outputObj = merged
       const fakeRaw =
-        item?.fake_score ??
-        item?.fakeScore ??
-        item?.score ??
-        item?.overall_risk ??
-        item?.risk_score ??
-        outputObj?.fake_score ??
-        outputObj?.fakeScore ??
-        outputObj?.score ??
-        outputObj?.overall_risk ??
-        outputObj?.risk_score ??
+        merged?.fake_score ??
+        merged?.fakeScore ??
+        merged?.score ??
+        merged?.overall_risk ??
+        merged?.risk_score ??
         null
       let fakeScore = fakeRaw == null || fakeRaw === '' ? null : Number(fakeRaw)
       // 兼容新工作流协议：fakeScore 为 0-10，riskLevel 为 low/medium/high；仅此场景换算到 0-100
-      const riskToken = String(
-        item?.risk_level ||
-          item?.riskLevel ||
-          item?.risk ||
-          outputObj?.risk_level ||
-          outputObj?.riskLevel ||
-          outputObj?.risk ||
-          '',
-      ).toLowerCase()
+      const riskToken = String(merged?.risk_level || merged?.riskLevel || merged?.risk || '').toLowerCase()
       const isLmH = riskToken === 'low' || riskToken === 'medium' || riskToken === 'high'
       if (fakeScore != null && !Number.isNaN(fakeScore) && fakeScore >= 0 && fakeScore <= 10 && isLmH) {
         fakeScore = Number((fakeScore * 10).toFixed(2))
       }
       const normalizedFakeScore = fakeScore != null && !Number.isNaN(fakeScore) ? fakeScore : null
-      const riskLevel = normalizeRiskLevel(
-        item?.risk_level || item?.riskLevel || item?.risk || outputObj?.risk_level || outputObj?.riskLevel || outputObj?.risk || null,
+      let riskLevel = normalizeRiskLevel(
+        merged?.risk_level || merged?.riskLevel || merged?.risk || null,
         normalizedFakeScore,
       )
+      if (!riskLevel || !['低风险', '中风险', '高风险'].includes(String(riskLevel))) {
+        riskLevel = '中风险'
+      }
 
-      const { newsId, newsUid } = await upsertNewsFromWorkflowItem({
-        ...item,
-        title,
-        content,
-        source_name: sourceName,
-        url: newsUrl,
-        publishedAt,
-        language,
-        // 让 upsertNewsFromWorkflowItem 自己基于 title/url/publishedAt 兜底计算 news_uid
-        news_uid: item?.news_uid || item?.newsUid || item?.uniqueId || null,
-      })
+      const { newsId, newsUid } = await upsertNewsFromWorkflowItem(
+        {
+          ...merged,
+          title,
+          content,
+          source_name: sourceName,
+          url: newsUrl,
+          publishedAt,
+          language,
+          news_uid: merged?.news_uid || merged?.newsUid || merged?.uniqueId || null,
+        },
+        { runSalt: workflowRunSalt, itemIndex },
+      )
 
-      const inputJson = item?.input || item?.input_json || item?.request || item?.raw_input || null
+      const inputJson = merged?.input || merged?.input_json || merged?.request || merged?.raw_input || null
 
       const [ar] = await pool.execute(
         `
@@ -1642,14 +1817,21 @@ async function runNewsWorkflowHandler(req, res) {
         [
           uid,
           newsId || null,
-          JSON.stringify(inputJson || { workflowItem: item }),
+          JSON.stringify(
+            inputJson || {
+              workflowMeta: workflowMeta || undefined,
+              workflowRunSalt,
+              workflowItemIndex: itemIndex,
+              workflowItem: merged,
+            },
+          ),
           JSON.stringify(outputJson),
           normalizedFakeScore,
-          riskLevel || '待评估',
+          riskLevel,
         ],
       )
 
-      const finalNewsTitle = title || item?.headline || `工作流新闻 ${String(newsId || newsUid).slice(0, 8)}`
+      const finalNewsTitle = title || merged?.headline || `工作流新闻 ${String(newsId || newsUid).slice(0, 8)}`
       const finalNewsSummary = newsSummary
         ? clampSummaryChars(String(newsSummary), 100)
         : clampSummaryChars(content ? content.slice(0, 100) : finalNewsTitle.slice(0, 100), 100)
@@ -1677,7 +1859,7 @@ async function runNewsWorkflowHandler(req, res) {
             ar.insertId,
             '高风险新闻工作流命中',
             sourceName || 'workflow',
-            riskLevel || '待评估',
+            riskLevel,
             normalizedFakeScore,
             JSON.stringify(outputJson),
           ],
@@ -1687,7 +1869,7 @@ async function runNewsWorkflowHandler(req, res) {
       storedCount += 1
     }
 
-    return res.json(success({ storedCount }))
+    return res.json(success({ storedCount, workflow: workflowMeta }))
   } catch (error) {
     const msg =
       error?.response?.data?.message ||
