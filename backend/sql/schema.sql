@@ -15,13 +15,10 @@ CREATE TABLE IF NOT EXISTS news (
   description TEXT NULL,
   content LONGTEXT NULL,
   source_name VARCHAR(128) NULL,
-  author VARCHAR(128) NULL,
   url VARCHAR(512) NULL UNIQUE,
-  image_url VARCHAR(512) NULL,
   language VARCHAR(16) NULL DEFAULT 'unknown',
   country VARCHAR(16) NULL DEFAULT 'global',
   published_at DATETIME NULL,
-  raw_json JSON NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_news_published_at (published_at),
   INDEX idx_news_source_name (source_name)

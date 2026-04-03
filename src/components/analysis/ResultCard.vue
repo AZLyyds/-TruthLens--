@@ -10,18 +10,9 @@ const props = defineProps<{
   result: AnalysisResult | null
   error: string
   analyzedAt: string
-  expanded: {
-    core: boolean
-    radar: boolean
-    evidence: boolean
-    details: boolean
-  }
 }>()
 
-const emit = defineEmits<{
-  toggle: [key: 'core' | 'radar' | 'evidence' | 'details']
-  export: []
-}>()
+const emit = defineEmits<{ export: [] }>()
 
 const steps = [
   { key: 'extract', icon: '🔍', title: '提取', text: '提取核心陈述与时间点' },
@@ -36,77 +27,433 @@ const sourceLine = computed(() => [props.result?.meta?.sourceName, props.analyze
 </script>
 
 <template>
-  <section class="card io-panel single-card single-result-card">
-    <div class="single-result-header">
-      <h2>输出（result）</h2>
-      <button class="single-export-btn" :disabled="!result" @click="emit('export')">导出</button>
+  <section class="an-shell single-card single-result-card">
+    <div class="an-top">
+      <h2 class="an-top-title">输出</h2>
+      <button type="button" class="an-export" :disabled="!result" @click="emit('export')">导出</button>
     </div>
 
-    <div v-if="loading" class="single-skeleton" aria-live="polite" aria-busy="true">
-      <div class="single-sk-line lg" />
-      <div class="single-sk-line" />
-      <div class="single-sk-line" />
-      <div class="single-sk-grid">
-        <div v-for="i in 4" :key="i" class="single-sk-box" />
+    <div class="an-body">
+      <div v-if="loading" class="an-scroll an-skeleton" aria-live="polite" aria-busy="true">
+        <div class="an-sk an-sk-lg" />
+        <div class="an-sk" />
+        <div class="an-sk" />
+        <div class="an-sk-grid">
+          <div v-for="i in 4" :key="i" class="an-sk-box" />
+        </div>
+        <div class="an-sk-radar" />
       </div>
-    </div>
 
-    <p v-else-if="error" class="single-error">{{ error }}</p>
-    <p v-else-if="!result" class="single-placeholder" v-once>点击「开始分析」后在此查看结果。</p>
+      <div v-else-if="error" class="an-scroll">
+        <p class="an-error">{{ error }}</p>
+      </div>
 
-    <div v-else class="single-fadein">
-      <article class="single-collapse card-in is-core">
-        <button class="single-collapse-trigger" @click="emit('toggle', 'core')">
-          <span>核心结论</span>
-          <span>{{ expanded.core ? '收起' : '展开' }}</span>
-        </button>
-        <div v-show="expanded.core" class="single-collapse-content">
-          <h3 class="single-title">{{ displayTitle }}</h3>
-          <p class="single-meta" v-if="sourceLine">{{ sourceLine }}</p>
-          <p class="single-summary">{{ displaySummary }}</p>
-          <div class="single-score">
-            <div class="single-score-row">
-              <span>可信度</span>
-              <strong>{{ result.credibilityScore }}</strong>
+      <div v-else-if="!result" class="an-empty">
+        <p class="an-empty-title">等待分析</p>
+        <p class="an-empty-desc">在左侧输入正文或链接，点击「开始分析」后，结果将显示于此。</p>
+      </div>
+
+      <div v-else class="an-scroll an-enter">
+        <section class="an-sheet">
+          <p class="an-eyebrow">核心结论</p>
+          <h3 class="an-hero-title" :title="displayTitle">{{ displayTitle }}</h3>
+          <p v-if="sourceLine" class="an-meta">{{ sourceLine }}</p>
+          <p class="an-lead" :title="displaySummary">{{ displaySummary }}</p>
+          <div class="an-metrics">
+            <div class="an-metric">
+              <span class="an-metric-label">可信度</span>
+              <span class="an-metric-value">{{ result.credibilityScore }}</span>
             </div>
-            <div class="single-score-row">
-              <span>风险判断</span>
-              <strong>{{ result.verdict }} · {{ result.riskLevel }}</strong>
+            <div class="an-metric">
+              <span class="an-metric-label">风险</span>
+              <span class="an-metric-value an-metric-value--sub">{{ result.riskLevel }}</span>
+              <span class="an-metric-hint">{{ result.verdict }}</span>
             </div>
           </div>
-        </div>
-      </article>
+        </section>
 
-      <article class="single-collapse card-in">
-        <button class="single-collapse-trigger" @click="emit('toggle', 'radar')">
-          <span>风险维度雷达</span>
-          <span>{{ expanded.radar ? '收起' : '展开' }}</span>
-        </button>
-        <div v-show="expanded.radar" class="single-collapse-content">
-          <RadarChart :dimensions="result.dimensions" />
-        </div>
-      </article>
+        <section class="an-sheet">
+          <p class="an-eyebrow">风险维度</p>
+          <div class="an-radar-box">
+            <RadarChart :dimensions="result.dimensions" />
+          </div>
+        </section>
 
-      <article class="single-collapse card-in">
-        <button class="single-collapse-trigger" @click="emit('toggle', 'evidence')">
-          <span>证据路径</span>
-          <span>{{ expanded.evidence ? '收起' : '展开' }}</span>
-        </button>
-        <div v-show="expanded.evidence" class="single-collapse-content">
+        <section class="an-sheet an-sheet--flush">
+          <p class="an-eyebrow">证据路径</p>
           <EvidencePath :steps="steps" />
-        </div>
-      </article>
+        </section>
 
-      <article class="single-collapse card-in">
-        <button class="single-collapse-trigger" @click="emit('toggle', 'details')">
-          <span>关键原因与建议</span>
-          <span>{{ expanded.details ? '收起' : '展开' }}</span>
-        </button>
-        <div v-show="expanded.details" class="single-collapse-content single-detail">
-          <p><b>关键原因：</b>{{ (result.reasons || []).join('；') || '暂无' }}</p>
-          <p><b>建议：</b>{{ (result.suggestions || []).join('；') || '暂无' }}</p>
-        </div>
-      </article>
+        <section class="an-sheet an-sheet--last">
+          <p class="an-eyebrow">关键原因与建议</p>
+          <div class="an-columns">
+            <div class="an-col">
+              <h4 class="an-col-title">原因</h4>
+              <ul class="an-list">
+                <li v-for="(r, i) in result.reasons?.length ? result.reasons : ['暂无']" :key="'r-' + i">{{ r }}</li>
+              </ul>
+            </div>
+            <div class="an-col">
+              <h4 class="an-col-title">建议</h4>
+              <ul class="an-list">
+                <li v-for="(s, i) in result.suggestions?.length ? result.suggestions : ['暂无']" :key="'s-' + i">{{ s }}</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   </section>
 </template>
+
+<style scoped>
+.an-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fafafa;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 8px 24px rgba(0, 0, 0, 0.06);
+}
+
+.an-top {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: saturate(180%) blur(16px);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.an-top-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  color: #1d1d1f;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC', sans-serif;
+}
+
+.an-export {
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  letter-spacing: -0.01em;
+  color: #fff;
+  background: #0071e3;
+  border: none;
+  border-radius: 980px;
+  cursor: pointer;
+  transition: opacity 0.2s ease, transform 0.15s ease;
+}
+
+.an-export:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+.an-export:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.an-export:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.an-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.an-body > .an-empty {
+  flex: 1 1 auto;
+}
+
+.an-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 12px 12px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.an-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+.an-enter {
+  animation: an-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes an-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.an-sheet {
+  background: #fff;
+  border-radius: 10px;
+  padding: 11px 12px 12px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.an-sheet--flush {
+  padding-bottom: 10px;
+}
+
+.an-sheet--last {
+  margin-bottom: 0;
+}
+
+.an-eyebrow {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #86868b;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC', sans-serif;
+}
+
+.an-hero-title {
+  margin: 0 0 6px;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.28;
+  letter-spacing: -0.024em;
+  color: #1d1d1f;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', 'PingFang SC', sans-serif;
+}
+
+.an-meta {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #86868b;
+  font-variant-numeric: tabular-nums;
+}
+
+.an-lead {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: -0.011em;
+  color: #424245;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.an-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.an-metric {
+  padding: 10px 10px 8px;
+  border-radius: 8px;
+  background: #f5f5f7;
+}
+
+.an-metric-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: #86868b;
+  margin-bottom: 4px;
+}
+
+.an-metric-value {
+  display: block;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: #1d1d1f;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.an-metric-value--sub {
+  font-size: 17px;
+}
+
+.an-metric-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #6e6e73;
+  line-height: 1.35;
+}
+
+.an-radar-box {
+  display: flex;
+  justify-content: center;
+  margin: 2px 0 0;
+  max-height: 200px;
+}
+
+.an-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .an-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .an-metrics {
+    grid-template-columns: 1fr;
+  }
+}
+
+.an-col-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #6e6e73;
+}
+
+.an-list {
+  margin: 0;
+  padding-left: 1.05rem;
+  font-size: 12px;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  color: #1d1d1f;
+}
+
+.an-list li {
+  margin-bottom: 6px;
+}
+
+.an-list li:last-child {
+  margin-bottom: 0;
+}
+
+.an-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 36px 24px 40px;
+  margin: 12px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px dashed rgba(0, 0, 0, 0.08);
+}
+
+.an-empty-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: #1d1d1f;
+}
+
+.an-empty-desc {
+  margin: 0;
+  max-width: 280px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #86868b;
+}
+
+.an-error {
+  margin: 0;
+  padding: 16px;
+  border-radius: 10px;
+  background: #fff2f2;
+  border: 1px solid rgba(255, 59, 48, 0.2);
+  color: #c41e12;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.an-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.an-sk {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #f5f5f7 25%, #ececee 50%, #f5f5f7 75%);
+  background-size: 200% 100%;
+  animation: an-shimmer 1.2s ease-in-out infinite;
+}
+
+.an-sk-lg {
+  width: 55%;
+  height: 20px;
+}
+
+.an-sk-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.an-sk-box {
+  height: 56px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, #f5f5f7 25%, #ececee 50%, #f5f5f7 75%);
+  background-size: 200% 100%;
+  animation: an-shimmer 1.2s ease-in-out infinite;
+}
+
+.an-sk-radar {
+  height: 200px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #f5f5f7 25%, #ececee 50%, #f5f5f7 75%);
+  background-size: 200% 100%;
+  animation: an-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes an-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+</style>

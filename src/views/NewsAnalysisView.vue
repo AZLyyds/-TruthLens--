@@ -57,14 +57,14 @@ watch(
     </header>
 
     <main class="panel-layout single-layout">
-      <InputArea v-model="inputText" :loading="store.isLoading" @analyze="runAnalysis" />
+      <div class="sa-input-wrap">
+        <InputArea v-model="inputText" :loading="store.isLoading" @analyze="runAnalysis" />
+      </div>
       <ResultCard
         :loading="store.isLoading"
         :result="store.result"
         :error="store.errorMessage"
         :analyzed-at="store.analyzedAt"
-        :expanded="store.expanded"
-        @toggle="store.toggle"
         @export="onExport"
       />
     </main>

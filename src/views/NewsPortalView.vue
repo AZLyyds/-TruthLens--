@@ -1,8 +1,8 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchDashboardOverview, fetchDashboardTrends } from '../api/dashboard'
-import { fetchNewsList } from '../api/news'
+import { fetchNewsDetail, fetchNewsList } from '../api/news'
 import { runNewsWorkflow } from '../api/workflow'
 
 const router = useRouter()
@@ -14,9 +14,18 @@ const overviewLoading = ref(false)
 
 const allNews = ref([])
 const trendItems = ref([])
-const overview = ref({ todayCollected: 0, highRiskCount: 0, mediaCoverage: 0 })
+const overview = ref({
+  todayCollected: 0,
+  yesterdayCollected: 0,
+  todayCollectedDeltaPct: 0,
+  highRiskCount: 0,
+  yesterdayHighRiskCount: 0,
+  highRiskDeltaPct: 0,
+  mediaCoverage: 0,
+})
 
 const pageSize = 12
+const visibleCount = ref(pageSize)
 const selectedKeyword = ref('')
 const filters = ref({
   source: 'all',
@@ -41,10 +50,8 @@ function formatTime(value) {
 }
 
 function toDetail(item) {
-  router.push({
-    name: 'analysis',
-    query: { title: item.title, newsId: item.id != null ? String(item.id) : undefined },
-  })
+  if (item?.id == null) return
+  router.push({ name: 'news-detail', params: { id: String(item.id) } })
 }
 
 async function loadNews() {
@@ -52,7 +59,25 @@ async function loadNews() {
   errorMessage.value = ''
   try {
     const rows = await fetchNewsList({ page: 1, pageSize: 200 })
-    allNews.value = Array.isArray(rows) ? rows : []
+    const baseRows = Array.isArray(rows) ? rows : []
+    // 与详情页保持同一风险来源：按新闻 id 回填 detail.riskLevel / detail.fakeScore
+    const enriched = await Promise.all(
+      baseRows.map(async (item) => {
+        if (item?.id == null) return item
+        try {
+          const d = await fetchNewsDetail(item.id)
+          return {
+            ...item,
+            risk: d?.riskLevel || item.risk || null,
+            fakeScore: d?.fakeScore ?? item.fakeScore ?? null,
+          }
+        } catch {
+          return item
+        }
+      }),
+    )
+    allNews.value = enriched
+    visibleCount.value = pageSize
   } catch (error) {
     errorMessage.value = error?.message || '新闻加载失败'
   } finally {
@@ -66,7 +91,11 @@ async function loadOverview() {
     const [o, t] = await Promise.all([fetchDashboardOverview(), fetchDashboardTrends()])
     overview.value = {
       todayCollected: Number(o?.todayCollected || 0),
+      yesterdayCollected: Number(o?.yesterdayCollected || 0),
+      todayCollectedDeltaPct: Number(o?.todayCollectedDeltaPct || 0),
       highRiskCount: Number(o?.highRiskCount || 0),
+      yesterdayHighRiskCount: Number(o?.yesterdayHighRiskCount || 0),
+      highRiskDeltaPct: Number(o?.highRiskDeltaPct || 0),
       mediaCoverage: Number(o?.mediaCoverage || 0),
     }
     trendItems.value = Array.isArray(t?.items) ? t.items : []
@@ -133,7 +162,20 @@ const filteredNews = computed(() => {
     })
 })
 
-const visibleNews = computed(() => filteredNews.value.slice(0, pageSize))
+const visibleNews = computed(() => filteredNews.value.slice(0, visibleCount.value))
+const canLoadMore = computed(() => visibleNews.value.length < filteredNews.value.length)
+
+function loadMore() {
+  visibleCount.value = Math.min(filteredNews.value.length, visibleCount.value + pageSize)
+}
+
+// 筛选条件变化时，重置为每次展示 12 条
+watch(
+  () => [filters.value.source, filters.value.risk, filters.value.time, filters.value.keyword, selectedKeyword.value],
+  () => {
+    visibleCount.value = pageSize
+  },
+)
 
 const trendSeries = computed(() => {
   const src = trendItems.value.length
@@ -150,11 +192,25 @@ const trendSeries = computed(() => {
 
 const trendPath = computed(() => trendSeries.value.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' '))
 const trendHoverIndex = ref(-1)
+const currentHighRiskCount = computed(() => allNews.value.filter((n) => n.risk === '高风险').length)
 
 const metricCards = computed(() => {
   const base = [
-    { key: 'todayCollected', title: '今日采集', icon: '🛰', value: overview.value.todayCollected, delta: 6.8 },
-    { key: 'highRiskCount', title: '高风险条目', icon: '⚠', value: overview.value.highRiskCount, delta: -2.3 },
+    {
+      key: 'todayCollected',
+      title: '今日采集',
+      icon: '🛰',
+      value: overview.value.todayCollected,
+      delta: overview.value.todayCollectedDeltaPct,
+    },
+    {
+      key: 'highRiskCount',
+      title: '高风险条目',
+      icon: '⚠',
+      // 与下方新闻流卡片使用同一数据源，保证口径一致
+      value: currentHighRiskCount.value,
+      delta: overview.value.highRiskDeltaPct,
+    },
   ]
   return base.map((card, idx) => ({
     ...card,
@@ -295,7 +351,7 @@ onMounted(async () => {
           <header class="feed-header">
             <div>
               <h2>海外新闻实时流</h2>
-              <p class="desc">固定分页展示，每次 12 条，点击卡片进入分析页面。</p>
+              <p class="desc">默认每次展示 12 条，可点击“加载更多”查看更多；点击卡片进入新闻详情，可在详情页进入深度分析。</p>
             </div>
             <div class="feed-count">共 {{ filteredNews.length }} 条</div>
           </header>
@@ -331,8 +387,13 @@ onMounted(async () => {
             <div v-else-if="visibleNews.length" class="news-grid">
               <article v-for="item in visibleNews" :key="item.id" class="news-tile" @click="toDetail(item)">
                 <header>
-                  <span :class="['risk-tag', item.risk === '高风险' ? 'high' : item.risk === '中风险' ? 'mid' : 'low']">
-                    {{ item.risk || '低风险' }}
+                  <span
+                    :class="[
+                      'risk-tag',
+                      item.risk === '高风险' ? 'high' : item.risk === '中风险' ? 'mid' : item.risk === '低风险' ? 'low' : 'pending',
+                    ]"
+                  >
+                    {{ item.risk || '待评估' }}
                   </span>
                   <span class="source">{{ item.source || '未知来源' }}</span>
                 </header>
@@ -347,8 +408,17 @@ onMounted(async () => {
             </div>
           </div>
 
-          <footer class="feed-footer" v-if="!isLoading && visibleNews.length">
-            <span>已展示全部结果</span>
+          <footer class="feed-footer" v-if="!isLoading && filteredNews.length">
+            <button
+              v-if="canLoadMore"
+              type="button"
+              class="load-more-btn"
+              @click="loadMore"
+            >
+              加载更多（每次 12 条）
+            </button>
+            <span v-if="canLoadMore" class="feed-footer-sub">已展示 {{ visibleNews.length }} / {{ filteredNews.length }} 条</span>
+            <span v-else>已展示全部结果（{{ filteredNews.length }} 条）</span>
           </footer>
         </section>
       </main>
@@ -667,6 +737,11 @@ onMounted(async () => {
   background: #fee2e2;
 }
 
+.risk-tag.pending {
+  color: #475569;
+  background: #e2e8f0;
+}
+
 .source {
   color: #7088ab;
   font-size: 12px;
@@ -693,6 +768,31 @@ onMounted(async () => {
   text-align: center;
   color: #7088ab;
   font-size: 12px;
+}
+
+.load-more-btn {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #2563eb, #60a5fa);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 10px 28px rgba(37, 99, 235, 0.22);
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.load-more-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.04);
+}
+
+.feed-footer-sub {
+  display: inline-block;
+  margin-left: 8px;
 }
 
 .skeleton {

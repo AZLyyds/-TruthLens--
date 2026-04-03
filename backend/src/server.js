@@ -541,26 +541,215 @@ app.get('/api/v1/news', async (req, res) => {
   const safeOffset = Math.max(0, (Number(page) - 1) * safePageSize)
   const [items] = await pool.query(
     `
-    SELECT id, title, source_name AS source, published_at AS publishedAt
-    FROM news
-    ORDER BY published_at DESC, id DESC
+    SELECT
+      n.id,
+      n.title,
+      n.source_name AS source,
+      n.published_at AS publishedAt,
+      ar.risk_level AS risk,
+      ar.fake_score AS fakeScore,
+      ar.output_json AS outputJson
+    FROM news n
+    LEFT JOIN analysis_records ar
+      ON ar.id = (
+        SELECT id
+        FROM analysis_records
+        WHERE news_id = n.id AND analysis_type = 'single'
+        ORDER BY created_at DESC
+        LIMIT 1
+      )
+    ORDER BY n.published_at DESC, n.id DESC
     LIMIT ${safePageSize} OFFSET ${safeOffset}
     `,
   )
   const [countRows] = await pool.execute('SELECT COUNT(*) AS total FROM news')
-  res.json(success({ items, page, pageSize, total: countRows[0].total }))
+  const mapped = items.map((row) => {
+    const out = parseJsonSafe(row.outputJson, {})
+    const fakeFromDb = row.fakeScore != null && !Number.isNaN(Number(row.fakeScore)) ? Number(row.fakeScore) : null
+    const fakeScore =
+      fakeFromDb ??
+      (out.fakeScore != null && !Number.isNaN(Number(out.fakeScore))
+        ? Number(out.fakeScore)
+        : out.fake_score != null && !Number.isNaN(Number(out.fake_score))
+          ? Number(out.fake_score)
+          : out.overall_risk != null && !Number.isNaN(Number(out.overall_risk))
+            ? Number(out.overall_risk)
+            : null)
+    const riskLevel =
+      row.risk ||
+      out.riskLevel ||
+      out.risk_level ||
+      (out.risk && typeof out.risk === 'string' ? out.risk : null) ||
+      normalizeRiskLevel(null, fakeScore)
+    return {
+      id: row.id,
+      title: row.title,
+      source: row.source,
+      publishedAt: row.publishedAt,
+      risk: riskLevel || null,
+      fakeScore: fakeScore ?? null,
+    }
+  })
+  res.json(success({ items: mapped, page, pageSize, total: countRows[0].total }))
 })
 
+function parseJsonSafe(v, fallback = {}) {
+  if (v == null) return fallback
+  if (typeof v === 'object') return v
+  try {
+    return JSON.parse(String(v))
+  } catch {
+    return fallback
+  }
+}
+
+function inferChinaRelated(title, content) {
+  const t = `${title || ''} ${String(content || '').slice(0, 800)}`
+  return /中国|中华|涉华|对华|北京|中共|两岸|港台|\bCN\b|Chinese|china/i.test(t)
+}
+
+function buildMultiSourceCheck(raw, latestOut) {
+  const existing = raw.multiSourceCheck ?? raw.multi_source_check
+  if (existing && typeof existing === 'object') return existing
+  const dim = latestOut?.dimensions
+  if (!dim) {
+    return {
+      consistencyLabel: '待核验',
+      consistencyScore: null,
+      authorityLabel: '暂无分析记录',
+      authorityNote: '完成一次「单篇深度分析」后，将在此展示多源一致性与信源权威性评估。',
+      sourcesCompared: Number(raw.sourcesCompared ?? raw.sources_compared ?? 0) || 0,
+    }
+  }
+  const fact = Number(dim.factConsistency ?? 0)
+  const src = Number(dim.sourceCredibility ?? 0)
+  return {
+    consistencyLabel: fact >= 70 ? '高度一致' : fact >= 45 ? '部分一致' : '待交叉核验',
+    consistencyScore: fact,
+    authorityLabel: src >= 70 ? '信源较权威' : src >= 45 ? '信源参差' : '需谨慎采信',
+    authorityNote: `事实一致性维度 ${fact}，来源可信度维度 ${src}（基于最近一次深度分析）。`,
+    sourcesCompared: Number(raw.sourcesCompared ?? raw.sources_compared ?? 1) || 1,
+  }
+}
+
+function pickRiskReason(latest, raw) {
+  if (raw.riskReason) return String(raw.riskReason)
+  if (raw.risk_reason) return String(raw.risk_reason)
+  const r = latest?.reasons
+  if (Array.isArray(r) && r.length) return r.join('；')
+  const txt = latest?.risk && typeof latest.risk === 'object' ? latest.risk.stance : ''
+  return txt ? String(txt) : ''
+}
+
 app.get('/api/v1/news/:id', async (req, res) => {
+  const rawId = req.params.id
+  const id = Number(rawId)
+  if (!Number.isFinite(id) || id <= 0) {
+    return res.status(422).json(fail('invalid news id', 422, 'VALIDATION_ERROR'))
+  }
+
   const [rows] = await pool.execute(
     `
-    SELECT id, title, source_name AS source, description, content, url, published_at AS publishedAt
+    SELECT
+      id,
+      news_uid AS newsUid,
+      title,
+      description,
+      content,
+      source_name AS source,
+      url,
+      language,
+      country,
+      published_at AS publishedAt
     FROM news WHERE id = ?
     `,
-    [req.params.id],
+    [id],
   )
   if (!rows.length) return res.status(404).json(fail('news not found', 404, 'NOT_FOUND'))
-  res.json(success(rows[0]))
+  const row = rows[0]
+
+  const [arRows] = await pool.execute(
+    `
+    SELECT fake_score AS fakeScore, risk_level AS riskLevel, output_json AS outputJson, created_at AS analyzedAt
+    FROM analysis_records
+    WHERE news_id = ? AND analysis_type = 'single'
+    ORDER BY created_at DESC
+    LIMIT 1
+    `,
+    [id],
+  )
+
+  let latestAnalysis = null
+  let outputObj = {}
+  if (arRows.length) {
+    const ar = arRows[0]
+    outputObj = parseJsonSafe(ar.outputJson, {})
+    latestAnalysis = {
+      fakeScore: Number(ar.fakeScore),
+      riskLevel: ar.riskLevel,
+      analyzedAt: ar.analyzedAt,
+      credibilityScore: outputObj.credibilityScore,
+      verdict: outputObj.verdict,
+      reasons: outputObj.reasons,
+      suggestions: outputObj.suggestions,
+      facts: outputObj.facts,
+      risk: outputObj.risk,
+      dimensions: outputObj.dimensions,
+      meta: outputObj.meta,
+      aiSummary: outputObj.aiSummary,
+    }
+  }
+
+  const lang = row.language || 'unknown'
+  const chinaRelated = inferChinaRelated(row.title, row.content)
+
+  const fakeScore =
+    latestAnalysis?.fakeScore ??
+    (outputObj.fakeScore != null
+      ? Number(outputObj.fakeScore)
+      : outputObj.fake_score != null
+        ? Number(outputObj.fake_score)
+        : outputObj.overall_risk != null
+          ? Number(outputObj.overall_risk)
+          : null)
+
+  const riskLevel = latestAnalysis?.riskLevel ?? outputObj.riskLevel ?? outputObj.risk_level ?? outputObj.risk ?? null
+
+  const credibilityScore =
+    latestAnalysis?.credibilityScore ??
+    (fakeScore != null && !Number.isNaN(fakeScore) ? Number((100 - Number(fakeScore)).toFixed(2)) : null)
+
+  const payload = {
+    id: row.id,
+    newsUid: row.newsUid,
+    title: row.title,
+    titleCN: null,
+    summary: row.description || '',
+    source: row.source,
+    url: row.url,
+    content: row.content,
+    contentCN: null,
+    description: row.description,
+    publishedAt: row.publishedAt,
+    lang,
+    language: lang,
+    country: row.country,
+    chinaRelated,
+    facts: latestAnalysis?.facts ?? outputObj.facts ?? [],
+    fakeScore,
+    riskLevel,
+    riskReason: pickRiskReason(latestAnalysis ? { ...latestAnalysis, risk: outputObj.risk } : {}, {}),
+    multiSourceCheck: buildMultiSourceCheck({}, outputObj),
+    credibilityScore,
+    verdict: latestAnalysis?.verdict ?? null,
+    reasons: latestAnalysis?.reasons ?? outputObj.reasons ?? [],
+    suggestions: latestAnalysis?.suggestions ?? outputObj.suggestions ?? [],
+    dimensions: latestAnalysis?.dimensions ?? outputObj.dimensions ?? null,
+    latestAnalysis,
+    rawWorkflow: null,
+  }
+
+  res.json(success(payload))
 })
 
 app.post('/api/v1/news', async (req, res) => {
@@ -1024,12 +1213,60 @@ app.delete('/api/v1/users/:id', async (req, res) => {
 
 app.get('/api/v1/dashboard/overview', async (_req, res) => {
   const [todayRows] = await pool.execute('SELECT COUNT(*) AS todayCollected FROM news WHERE DATE(created_at) = CURDATE()')
-  const [riskRows] = await pool.execute("SELECT COUNT(*) AS highRiskCount FROM analysis_records WHERE risk_level = '高风险'")
+  const [yesterdayRows] = await pool.execute(
+    'SELECT COUNT(*) AS yesterdayCollected FROM news WHERE DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)',
+  )
+  const [highRiskRows] = await pool.execute(
+    `
+    SELECT COUNT(*) AS highRiskCount
+    FROM news n
+    LEFT JOIN analysis_records ar
+      ON ar.id = (
+        SELECT id
+        FROM analysis_records
+        WHERE news_id = n.id AND analysis_type = 'single'
+        ORDER BY created_at DESC
+        LIMIT 1
+      )
+    WHERE ar.risk_level = '高风险'
+    `,
+  )
+  const [yesterdayHighRows] = await pool.execute(
+    `
+    SELECT COUNT(*) AS yesterdayHighRiskCount
+    FROM news n
+    LEFT JOIN analysis_records ar
+      ON ar.id = (
+        SELECT id
+        FROM analysis_records
+        WHERE news_id = n.id AND analysis_type = 'single'
+        ORDER BY created_at DESC
+        LIMIT 1
+      )
+    WHERE ar.risk_level = '高风险' AND DATE(n.created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+    `,
+  )
   const [mediaRows] = await pool.execute('SELECT COUNT(DISTINCT source_name) AS mediaCoverage FROM news')
+
+  const todayCollected = Number(todayRows[0].todayCollected || 0)
+  const yesterdayCollected = Number(yesterdayRows[0].yesterdayCollected || 0)
+  const highRiskCount = Number(highRiskRows[0].highRiskCount || 0)
+  const yesterdayHighRiskCount = Number(yesterdayHighRows[0].yesterdayHighRiskCount || 0)
+
+  const deltaPct = (today, yesterday) => {
+    if (!yesterday && today) return 100
+    if (!yesterday && !today) return 0
+    return Number((((today - yesterday) / Math.max(1, yesterday)) * 100).toFixed(1))
+  }
+
   res.json(
     success({
-      todayCollected: Number(todayRows[0].todayCollected || 0),
-      highRiskCount: Number(riskRows[0].highRiskCount || 0),
+      todayCollected,
+      yesterdayCollected,
+      todayCollectedDeltaPct: deltaPct(todayCollected, yesterdayCollected),
+      highRiskCount,
+      yesterdayHighRiskCount,
+      highRiskDeltaPct: deltaPct(highRiskCount, yesterdayHighRiskCount),
       mediaCoverage: Number(mediaRows[0].mediaCoverage || 0),
     }),
   )
@@ -1167,6 +1404,8 @@ function normalizeDashscopeWorkflowItems(workflowJson) {
   const obj = workflowJson
   if (!obj) return []
   if (Array.isArray(obj)) return obj
+  // 直接支持你当前约定的顶层格式：{ newsAnalysis: [...] }
+  if (Array.isArray(obj.newsAnalysis)) return obj.newsAnalysis
   // 百炼工作流常见返回形态：{ res3: { res: "{...newsAnalysis:[...]}" } }
   if (obj?.res3?.res && typeof obj.res3.res === 'string') {
     const tryParse = (s) => {
@@ -1207,11 +1446,15 @@ function normalizeRiskLevel(riskLevel, fakeScore) {
   if (/^medium$/i.test(v) || /^Medium$/i.test(v)) return '中风险'
   if (/^high$/i.test(v) || /^High$/i.test(v)) return '高风险'
 
+  // 非标准枚举但工作流已经给了字符串，例如“高风险-涉华”，直接尊重原值
+  if (v) return v
+
+  // 仅在完全没有传 riskLevel 时，才根据 FakeScore 做一次兜底映射
   const score = Number(fakeScore)
   if (!Number.isNaN(score)) {
     return score >= 70 ? '高风险' : score >= 45 ? '中风险' : '低风险'
   }
-  return '低风险'
+  return null
 }
 
 function computeNewsUid({ uniqueId, url, title, publishedAt }) {
@@ -1222,16 +1465,13 @@ function computeNewsUid({ uniqueId, url, title, publishedAt }) {
 }
 
 async function upsertNewsFromWorkflowItem(item) {
-  const title = String(item?.title || item?.newsTitle || '').trim()
+  const title = String(item?.titleCN || item?.title_cn || item?.title || item?.newsTitle || '').trim()
   const content = item?.content || item?.body || item?.article || ''
   const description = item?.description || item?.summary || null
   const sourceName = item?.source_name || item?.sourceName || item?.source || null
   const url = item?.url || item?.link || item?.source_url || null
   const language = item?.language || item?.lang || 'unknown'
   const publishedAt = item?.published_at || item?.publishedAt || item?.time || null
-  const rawJson = item?.raw_json || item?.rawJson || item?.raw || null
-  const author = item?.author || null
-  const imageUrl = item?.image_url || item?.imageUrl || null
   const newsUid = computeNewsUid({
     uniqueId: item?.news_uid || item?.newsUid || item?.uniqueId || item?.uid || item?.id,
     url,
@@ -1247,19 +1487,16 @@ async function upsertNewsFromWorkflowItem(item) {
   await pool.execute(
     `
       INSERT INTO news (
-        news_uid, title, description, content, source_name, author, url, image_url, language, published_at, raw_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        news_uid, title, description, content, source_name, url, language, published_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         title = COALESCE(VALUES(title), title),
         description = COALESCE(VALUES(description), description),
         content = COALESCE(VALUES(content), content),
         source_name = COALESCE(VALUES(source_name), source_name),
-        author = COALESCE(VALUES(author), author),
         url = COALESCE(VALUES(url), url),
-        image_url = COALESCE(VALUES(image_url), image_url),
         language = COALESCE(VALUES(language), language),
-        published_at = COALESCE(VALUES(published_at), published_at),
-        raw_json = COALESCE(VALUES(raw_json), raw_json)
+        published_at = COALESCE(VALUES(published_at), published_at)
     `,
     [
       newsUid,
@@ -1267,12 +1504,9 @@ async function upsertNewsFromWorkflowItem(item) {
       cleanDescription,
       cleanContent || null,
       sourceName,
-      author,
       url,
-      imageUrl,
       language,
       toMysqlDateTime(publishedAt),
-      typeof rawJson === 'string' ? rawJson : rawJson ? JSON.stringify(rawJson) : null,
     ],
   )
 
@@ -1341,7 +1575,7 @@ async function runNewsWorkflowHandler(req, res) {
     let storedCount = 0
 
     for (const item of items) {
-      const title = String(item?.title || item?.newsTitle || '').trim()
+      const title = String(item?.titleCN || item?.title_cn || item?.title || item?.newsTitle || '').trim()
       const content = String(item?.content || item?.body || item?.article || '')
       const sourceName = item?.source_name || item?.sourceName || item?.source || null
       const newsUrl = item?.url || item?.link || item?.source_url || null
@@ -1350,15 +1584,40 @@ async function runNewsWorkflowHandler(req, res) {
 
       const newsSummary = item?.summary || item?.newsSummary || item?.ai_summary || item?.aiSummary || null
 
-      const fakeScore = Number(
+      const outputJson = item?.output || item?.output_json || item?.analysis || item?.result || item?.full || item
+      const outputObj = typeof outputJson === 'object' && outputJson ? outputJson : parseJsonSafe(outputJson, {})
+      const fakeRaw =
         item?.fake_score ??
-          item?.fakeScore ??
-          item?.score ??
-          item?.overall_risk ??
-          item?.risk_score ??
-          0,
+        item?.fakeScore ??
+        item?.score ??
+        item?.overall_risk ??
+        item?.risk_score ??
+        outputObj?.fake_score ??
+        outputObj?.fakeScore ??
+        outputObj?.score ??
+        outputObj?.overall_risk ??
+        outputObj?.risk_score ??
+        null
+      let fakeScore = fakeRaw == null || fakeRaw === '' ? null : Number(fakeRaw)
+      // 兼容新工作流协议：fakeScore 为 0-10，riskLevel 为 low/medium/high；仅此场景换算到 0-100
+      const riskToken = String(
+        item?.risk_level ||
+          item?.riskLevel ||
+          item?.risk ||
+          outputObj?.risk_level ||
+          outputObj?.riskLevel ||
+          outputObj?.risk ||
+          '',
+      ).toLowerCase()
+      const isLmH = riskToken === 'low' || riskToken === 'medium' || riskToken === 'high'
+      if (fakeScore != null && !Number.isNaN(fakeScore) && fakeScore >= 0 && fakeScore <= 10 && isLmH) {
+        fakeScore = Number((fakeScore * 10).toFixed(2))
+      }
+      const normalizedFakeScore = fakeScore != null && !Number.isNaN(fakeScore) ? fakeScore : null
+      const riskLevel = normalizeRiskLevel(
+        item?.risk_level || item?.riskLevel || item?.risk || outputObj?.risk_level || outputObj?.riskLevel || outputObj?.risk || null,
+        normalizedFakeScore,
       )
-      const riskLevel = normalizeRiskLevel(item?.risk_level || item?.riskLevel || item?.risk || null, fakeScore)
 
       const { newsId, newsUid } = await upsertNewsFromWorkflowItem({
         ...item,
@@ -1373,7 +1632,6 @@ async function runNewsWorkflowHandler(req, res) {
       })
 
       const inputJson = item?.input || item?.input_json || item?.request || item?.raw_input || null
-      const outputJson = item?.output || item?.output_json || item?.analysis || item?.result || item?.full || item
 
       const [ar] = await pool.execute(
         `
@@ -1381,7 +1639,14 @@ async function runNewsWorkflowHandler(req, res) {
             user_id, news_id, analysis_type, input_json, output_json, fake_score, risk_level
           ) VALUES (?, ?, 'single', ?, ?, ?, ?)
         `,
-        [uid, newsId || null, JSON.stringify(inputJson || { workflowItem: item }), JSON.stringify(outputJson), fakeScore, riskLevel],
+        [
+          uid,
+          newsId || null,
+          JSON.stringify(inputJson || { workflowItem: item }),
+          JSON.stringify(outputJson),
+          normalizedFakeScore,
+          riskLevel || '待评估',
+        ],
       )
 
       const finalNewsTitle = title || item?.headline || `工作流新闻 ${String(newsId || newsUid).slice(0, 8)}`
@@ -1402,13 +1667,20 @@ async function runNewsWorkflowHandler(req, res) {
         analysisRecordId: ar.insertId,
       })
 
-      if (alertRule.enabled && fakeScore >= alertRule.riskThreshold) {
+      if (alertRule.enabled && normalizedFakeScore != null && normalizedFakeScore >= alertRule.riskThreshold) {
         await pool.execute(
           `
             INSERT INTO alerts (analysis_id, title, source_name, risk_level, score, payload_json)
             VALUES (?, ?, ?, ?, ?, ?)
           `,
-          [ar.insertId, '高风险新闻工作流命中', sourceName || 'workflow', riskLevel, fakeScore, JSON.stringify(outputJson)],
+          [
+            ar.insertId,
+            '高风险新闻工作流命中',
+            sourceName || 'workflow',
+            riskLevel || '待评估',
+            normalizedFakeScore,
+            JSON.stringify(outputJson),
+          ],
         )
       }
 

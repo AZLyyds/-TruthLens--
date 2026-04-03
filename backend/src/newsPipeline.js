@@ -26,13 +26,10 @@ function normalizeArticle(article) {
     description: description || null,
     content: content || null,
     sourceName,
-    author: (article.author || '').trim() || null,
     url: article.url || null,
-    imageUrl: article.urlToImage || null,
     language: article.language || 'unknown',
     country: article.country || 'global',
     publishedAt: toDateTime(article.publishedAt),
-    rawJson: JSON.stringify(article),
   }
 }
 
@@ -57,19 +54,16 @@ export async function runNewsIngestion({ pool }) {
     const [result] = await pool.execute(
       `
       INSERT INTO news
-      (news_uid, title, description, content, source_name, author, url, image_url, language, country, published_at, raw_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (news_uid, title, description, content, source_name, url, language, country, published_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
       title = VALUES(title),
       description = VALUES(description),
       content = VALUES(content),
       source_name = VALUES(source_name),
-      author = VALUES(author),
-      image_url = VALUES(image_url),
       language = VALUES(language),
       country = VALUES(country),
-      published_at = VALUES(published_at),
-      raw_json = VALUES(raw_json)
+      published_at = VALUES(published_at)
       `,
       [
         item.newsUid,
@@ -77,13 +71,10 @@ export async function runNewsIngestion({ pool }) {
         item.description,
         item.content,
         item.sourceName,
-        item.author,
         item.url,
-        item.imageUrl,
         item.language,
         item.country,
         item.publishedAt,
-        item.rawJson,
       ],
     )
     if (result.affectedRows === 1) inserted += 1

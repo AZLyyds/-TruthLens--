@@ -32,13 +32,10 @@ const schemaStatements = [
     description TEXT NULL,
     content LONGTEXT NULL,
     source_name VARCHAR(128) NULL,
-    author VARCHAR(128) NULL,
     url VARCHAR(512) NULL UNIQUE,
-    image_url VARCHAR(512) NULL,
     language VARCHAR(16) NULL DEFAULT 'unknown',
     country VARCHAR(16) NULL DEFAULT 'global',
     published_at DATETIME NULL,
-    raw_json JSON NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_news_published_at (published_at),
     INDEX idx_news_source_name (source_name)
@@ -130,11 +127,27 @@ export async function migrateQueryHistoryTable(pool) {
   }
 }
 
+export async function migrateNewsTableDropUnusedColumns(pool) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'news'`,
+    )
+    if (!rows?.length) return
+    const names = new Set(rows.map((r) => r.COLUMN_NAME))
+    const toDrop = ['author', 'image_url', 'raw_json'].filter((name) => names.has(name))
+    if (!toDrop.length) return
+    await pool.query(`ALTER TABLE news ${toDrop.map((name) => `DROP COLUMN ${name}`).join(', ')}`)
+  } catch (e) {
+    console.warn('migrateNewsTableDropUnusedColumns:', e.message)
+  }
+}
+
 export async function initDatabase() {
   for (const statement of schemaStatements) {
     await pool.query(statement)
   }
   await migrateQueryHistoryTable(pool)
+  await migrateNewsTableDropUnusedColumns(pool)
 }
 
 export function getPool() {

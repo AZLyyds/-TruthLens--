@@ -7,6 +7,8 @@ const props = defineProps<{ dimensions?: AnalysisDimensions }>()
 const elRef = ref<HTMLDivElement | null>(null)
 let chart: any = null
 
+const labels = ['来源可信度', '事实一致性', '情绪煽动性', '传播误导性']
+
 const render = () => {
   if (!chart) return
   const d = props.dimensions || {}
@@ -18,14 +20,35 @@ const render = () => {
   ]
   chart.setOption({
     animationDuration: 900,
-    tooltip: { trigger: 'item' },
+    animationEasing: 'cubicOut',
+    tooltip: {
+      trigger: 'item',
+      confine: true,
+      backgroundColor: 'rgba(15, 23, 42, 0.9)',
+      borderColor: 'rgba(148, 163, 184, 0.35)',
+      textStyle: { color: '#f1f5f9', fontSize: 12 },
+      formatter: (params: { value?: number[]; data?: { value?: number[] } }) => {
+        const v = params?.value ?? params?.data?.value
+        if (!Array.isArray(v)) return ''
+        return labels.map((name, i) => `${name}：${v[i] ?? 0}`).join('<br/>')
+      },
+    },
+    legend: {
+      orient: 'horizontal',
+      bottom: 0,
+      data: ['风险维度'],
+      textStyle: { color: '#475569', fontSize: 12 },
+    },
     radar: {
-      radius: 78,
+      center: ['50%', '46%'],
+      radius: '58%',
       splitNumber: 4,
-      axisName: { color: '#4E5969', fontSize: 12 },
-      splitLine: { lineStyle: { color: '#C9CDD4' } },
-      splitArea: { areaStyle: { color: ['#F7FAFF', '#F3F8FF', '#EFF6FF', '#EAF4FF'] } },
-      axisLine: { lineStyle: { color: '#C9CDD4' } },
+      axisName: { color: '#475569', fontSize: 12, fontWeight: 500 },
+      splitLine: { lineStyle: { color: '#cbd5e1' } },
+      splitArea: {
+        areaStyle: { color: ['rgba(239,246,255,0.95)', 'rgba(219,234,254,0.55)', 'rgba(191,219,254,0.4)', 'rgba(147,197,253,0.25)'] },
+      },
+      axisLine: { lineStyle: { color: '#cbd5e1' } },
       indicator: [
         { name: '来源可信度', max: 100 },
         { name: '事实一致性', max: 100 },
@@ -35,13 +58,15 @@ const render = () => {
     },
     series: [
       {
+        name: '风险维度',
         type: 'radar',
         data: [
           {
             value: values,
-            areaStyle: { color: 'rgba(22,119,255,0.2)' },
-            lineStyle: { color: '#1677FF', width: 2 },
-            itemStyle: { color: '#1677FF' },
+            name: '风险维度',
+            areaStyle: { color: 'rgba(0, 113, 227, 0.18)' },
+            lineStyle: { color: '#0071e3', width: 2.5 },
+            itemStyle: { color: '#0071e3', borderWidth: 2, borderColor: '#fff' },
           },
         ],
       },
@@ -88,3 +113,15 @@ watch(() => props.dimensions, render, { deep: true })
     <div ref="elRef" class="single-radar-canvas" role="img" aria-label="风险维度雷达图" />
   </div>
 </template>
+
+<style scoped>
+.single-radar {
+  width: 100%;
+  height: 192px;
+}
+
+.single-radar-canvas {
+  width: 100%;
+  height: 100%;
+}
+</style>

@@ -11,18 +11,7 @@ export const useSingleAnalysisStore = defineStore('single-analysis', () => {
   const errorMessage = ref('')
   const analyzedAt = ref('')
 
-  const expanded = ref({
-    core: true,
-    radar: false,
-    evidence: false,
-    details: false,
-  })
-
   const isLoading = computed(() => status.value === 'loading')
-
-  const toggle = (key: keyof typeof expanded.value) => {
-    expanded.value[key] = !expanded.value[key]
-  }
 
   const run = async (payload: NewsAnalysisParams) => {
     status.value = 'loading'
@@ -43,5 +32,5 @@ export const useSingleAnalysisStore = defineStore('single-analysis', () => {
     }
   }
 
-  return { status, result, errorMessage, analyzedAt, expanded, isLoading, toggle, run }
+  return { status, result, errorMessage, analyzedAt, isLoading, run }
 })
