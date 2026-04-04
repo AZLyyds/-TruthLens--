@@ -34,7 +34,31 @@ const filters = ref({
   time: 'all',
 })
 
-const riskOrder = { 高风险: 3, 中风险: 2, 低风险: 1 }
+/** 列表 risk 与详情一致：可为 low / medium / high 或中文三档 */
+function riskRankForSort(risk) {
+  const r = String(risk ?? '').trim().toLowerCase()
+  if (r === '高风险' || r === 'high') return 3
+  if (r === '中风险' || r === 'medium') return 2
+  if (r === '低风险' || r === 'low') return 1
+  return 0
+}
+
+function riskFilterMatches(filterVal, itemRisk) {
+  if (filterVal === 'all') return true
+  const ir = String(itemRisk ?? '').trim().toLowerCase()
+  if (filterVal === '高风险') return ir === '高风险' || ir === 'high'
+  if (filterVal === '中风险') return ir === '中风险' || ir === 'medium'
+  if (filterVal === '低风险') return ir === '低风险' || ir === 'low'
+  return false
+}
+
+function riskTagClass(risk) {
+  const r = String(risk ?? '').trim().toLowerCase()
+  if (r === '高风险' || r === 'high') return 'high'
+  if (r === '中风险' || r === 'medium') return 'mid'
+  if (r === '低风险' || r === 'low') return 'low'
+  return 'pending'
+}
 
 function asDate(value) {
   if (!value) return null
@@ -139,7 +163,7 @@ const filteredNews = computed(() => {
   return allNews.value
     .filter((item) => {
       if (filters.value.source !== 'all' && item.source !== filters.value.source) return false
-      if (filters.value.risk !== 'all' && item.risk !== filters.value.risk) return false
+      if (!riskFilterMatches(filters.value.risk, item.risk)) return false
       const title = String(item.title || '').toLowerCase()
       const source = String(item.source || '').toLowerCase()
       if (selectedKeyword.value && !title.includes(selectedKeyword.value.toLowerCase())) return false
@@ -158,7 +182,7 @@ const filteredNews = computed(() => {
       const da = asDate(a.publishedAt || a.createdAt)?.getTime() || 0
       const db = asDate(b.publishedAt || b.createdAt)?.getTime() || 0
       if (db !== da) return db - da
-      return (riskOrder[b.risk] || 0) - (riskOrder[a.risk] || 0)
+      return riskRankForSort(b.risk) - riskRankForSort(a.risk)
     })
 })
 
@@ -192,7 +216,12 @@ const trendSeries = computed(() => {
 
 const trendPath = computed(() => trendSeries.value.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' '))
 const trendHoverIndex = ref(-1)
-const currentHighRiskCount = computed(() => allNews.value.filter((n) => n.risk === '高风险').length)
+const currentHighRiskCount = computed(() =>
+  allNews.value.filter((n) => {
+    const r = String(n.risk ?? '').trim().toLowerCase()
+    return r === '高风险' || r === 'high'
+  }).length,
+)
 
 const metricCards = computed(() => {
   const base = [
@@ -400,13 +429,8 @@ onMounted(async () => {
             <div v-else-if="visibleNews.length" class="news-grid">
               <article v-for="item in visibleNews" :key="item.id" class="news-tile" @click="toDetail(item)">
                 <header>
-                  <span
-                    :class="[
-                      'risk-tag',
-                      item.risk === '高风险' ? 'high' : item.risk === '中风险' ? 'mid' : item.risk === '低风险' ? 'low' : 'pending',
-                    ]"
-                  >
-                    {{ item.risk || '待评估' }}
+                  <span :class="['risk-tag', riskTagClass(item.risk)]">
+                    {{ item.risk || '—' }}
                   </span>
                   <span class="source">{{ item.source || '未知来源' }}</span>
                 </header>

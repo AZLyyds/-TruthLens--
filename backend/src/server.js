@@ -565,24 +565,17 @@ app.get('/api/v1/news', async (req, res) => {
   const [countRows] = await pool.execute('SELECT COUNT(*) AS total FROM news')
   const mapped = items.map((row) => {
     const out = parseJsonSafe(row.outputJson, {})
+    const wf = coalesceWorkflowPayload(out)
     const fakeFromDb = row.fakeScore != null && !Number.isNaN(Number(row.fakeScore)) ? Number(row.fakeScore) : null
-    const fakeScore =
-      fakeFromDb ??
-      (out.fakeScore != null && !Number.isNaN(Number(out.fakeScore))
-        ? Number(out.fakeScore)
-        : out.fake_score != null && !Number.isNaN(Number(out.fake_score))
-          ? Number(out.fake_score)
-          : out.overall_risk != null && !Number.isNaN(Number(out.overall_risk))
-            ? Number(out.overall_risk)
-            : null)
+    const fakeScore = normalizeDetailFakeScore(fakeFromDb, wf)
+    const fakeForRiskBand = fakeScoreForRiskBand(fakeFromDb, wf)
     const rawRisk =
-      row.risk ||
-      out.riskLevel ||
-      out.risk_level ||
-      (out.risk && typeof out.risk === 'string' ? out.risk : null) ||
+      wf.riskLevel ??
+      wf.risk_level ??
+      (typeof wf.risk === 'string' ? wf.risk : null) ??
+      row.risk ??
       null
-    const riskLevel =
-      normalizeRiskLevel(rawRisk, fakeScore) ?? normalizeRiskLevel(null, fakeScore) ?? '未评级'
+    const riskLevel = workflowRiskLevelForApiPayload(rawRisk, fakeForRiskBand)
     return {
       id: row.id,
       title: row.title,
@@ -621,6 +614,18 @@ function inferChinaRelated(title, content) {
   return /中国|中华|涉华|对华|北京|中共|两岸|港台|\bCN\b|Chinese|china/i.test(t)
 }
 
+/** item.result 为多新闻批次外壳时不应当作单条分析体 */
+function isWorkflowResultBatchEnvelope(resultVal) {
+  return (
+    resultVal &&
+    typeof resultVal === 'object' &&
+    (Array.isArray(resultVal.newsAnalysis) ||
+      resultVal.newsCount != null ||
+      resultVal.duplicateRemovedCount != null ||
+      resultVal.overallConclusion != null)
+  )
+}
+
 /**
  * 百炼单条新闻入库前合并：条目根上的 multiSourceCheck 不要被错误的 item.result 覆盖。
  * item.result 若为多新闻批次外壳（含 newsAnalysis / newsCount），不得当作单条分析体。
@@ -628,13 +633,7 @@ function inferChinaRelated(title, content) {
 function mergeWorkflowItemForStorage(item) {
   if (!item || typeof item !== 'object') return item
   const resultVal = item.result
-  const resultIsBatchEnvelope =
-    resultVal &&
-    typeof resultVal === 'object' &&
-    (Array.isArray(resultVal.newsAnalysis) ||
-      resultVal.newsCount != null ||
-      resultVal.duplicateRemovedCount != null ||
-      resultVal.overallConclusion != null)
+  const resultIsBatchEnvelope = isWorkflowResultBatchEnvelope(resultVal)
 
   let inner = item.output || item.output_json || item.analysis || item.full || null
   if (!inner && resultVal && typeof resultVal === 'object' && !resultIsBatchEnvelope) {
@@ -648,28 +647,111 @@ function mergeWorkflowItemForStorage(item) {
     return obj
   }
 
+  // 内层 output/result 为百炼真实分析体，须覆盖外壳 item 的同名字段；否则外壳上残缺的 multiSourceCheck 会盖住内层完整对象
   if (inner && typeof inner === 'object') {
-    return hoistMsc({ ...inner, ...item })
+    return hoistMsc({ ...item, ...inner })
   }
   return hoistMsc({ ...item })
 }
 
 /**
- * 详情页 multiSourceCheck：仅透传工作流写入的五个字段，不做兜底拼接、不注入当前新闻、不臆造枚举文案。
+ * 详情/列表读取：把 output_json 根对象与 output、output_json、result、data 等内层合并为一层，
+ * 内层字段覆盖外层，与入库时 mergeWorkflowItemForStorage 的结构对齐，避免只读到外壳而丢 fakeScore/multiSourceCheck。
  */
-function pickMultiSourceCheckStrict(outputObj) {
+function coalesceWorkflowPayload(outputObj) {
   const raw = outputObj && typeof outputObj === 'object' ? outputObj : {}
-  const hasKey =
-    Object.prototype.hasOwnProperty.call(raw, 'multiSourceCheck') ||
-    Object.prototype.hasOwnProperty.call(raw, 'multi_source_check')
-  if (!hasKey) return null
-  let m = raw.multiSourceCheck ?? raw.multi_source_check
+  const layers = []
+  if (raw.output && typeof raw.output === 'object') layers.push(raw.output)
+  if (raw.output_json && typeof raw.output_json === 'object') layers.push(raw.output_json)
+  const rv = raw.result
+  if (rv && typeof rv === 'object' && !isWorkflowResultBatchEnvelope(rv)) layers.push(rv)
+  if (raw.data && typeof raw.data === 'object') layers.push(raw.data)
+  if (raw.analysis && typeof raw.analysis === 'object') layers.push(raw.analysis)
+  if (raw.full && typeof raw.full === 'object') layers.push(raw.full)
+  return Object.assign({}, raw, ...layers)
+}
+
+function parseMultiSourceCheckBlob(m) {
   if (m == null) return null
   if (typeof m === 'string') {
     m = parseJsonSafe(m, null)
-    if (!m || typeof m !== 'object' || Array.isArray(m)) return null
   }
   if (!m || typeof m !== 'object' || Array.isArray(m)) return null
+  return m
+}
+
+/** 工作流/库里 isConsistent 的常见别名（只读映射，不编造枚举） */
+function pickIsConsistentField(obj) {
+  if (!obj || typeof obj !== 'object') return null
+  const candidates = [
+    obj.isConsistent,
+    obj.is_consistent,
+    obj.IsConsistent,
+    obj.informationConsistency,
+    obj.information_consistency,
+    obj.infoConsistency,
+    obj.info_consistency,
+    obj.consistency,
+    obj['信息一致性'],
+  ]
+  for (const c of candidates) {
+    if (c == null || c === '') continue
+    const s = String(c).trim()
+    if (s) return s
+  }
+  return null
+}
+
+function collectMultiSourceCheckBlobs(outputObj) {
+  const raw = outputObj && typeof outputObj === 'object' ? outputObj : {}
+  const list = []
+  const tryPush = (m) => {
+    const b = parseMultiSourceCheckBlob(m)
+    if (b) list.push(b)
+  }
+  tryPush(raw.multiSourceCheck ?? raw.multi_source_check)
+  const nested = [raw.output, raw.output_json, raw.analysis, raw.full, raw.data]
+  const rv = raw.result
+  if (rv && typeof rv === 'object' && !isWorkflowResultBatchEnvelope(rv)) nested.push(rv)
+  for (const c of nested) {
+    if (!c || typeof c !== 'object') continue
+    tryPush(c.multiSourceCheck ?? c.multi_source_check)
+  }
+  return list
+}
+
+/** 在多个 multiSourceCheck 候选中选「最完整」的一份（避免根上残缺对象挡住内层完整 JSON） */
+function scoreMultiSourceCheckBlob(b) {
+  if (!b || typeof b !== 'object') return -1
+  const descLen = b.description != null ? String(b.description).trim().length : 0
+  const rawA = b.mcpRelatedArticles ?? b.mcp_related_articles
+  const artLen = Array.isArray(rawA) ? rawA.length : 0
+  const hasCons = pickIsConsistentField(b) ? 1 : 0
+  const hasSame = typeof b.isSameEvent === 'boolean' || typeof b.is_same_event === 'boolean' ? 1 : 0
+  return descLen * 2 + artLen * 800 + hasCons * 400 + hasSame * 100
+}
+
+function findMultiSourceCheckObject(outputObj) {
+  const blobs = collectMultiSourceCheckBlobs(outputObj)
+  if (!blobs.length) return null
+  let best = blobs[0]
+  let bestScore = scoreMultiSourceCheckBlob(best)
+  for (let i = 1; i < blobs.length; i++) {
+    const s = scoreMultiSourceCheckBlob(blobs[i])
+    if (s > bestScore) {
+      bestScore = s
+      best = blobs[i]
+    }
+  }
+  return best
+}
+
+/**
+ * 详情页 multiSourceCheck：仅透传工作流字段，不注入当前新闻、不臆造文案。
+ */
+function pickMultiSourceCheckStrict(outputObj) {
+  const m = findMultiSourceCheckObject(outputObj)
+  if (!m) return null
 
   const rawArticles = m.mcpRelatedArticles ?? m.mcp_related_articles
   const mcpRelatedArticles = Array.isArray(rawArticles)
@@ -693,9 +775,7 @@ function pickMultiSourceCheckStrict(outputObj) {
         ? m.has_authority_source
         : null
 
-  let isConsistent = m.isConsistent ?? m.is_consistent
-  if (isConsistent != null && isConsistent !== '') isConsistent = String(isConsistent).trim()
-  else isConsistent = null
+  const isConsistent = pickIsConsistentField(m)
 
   const description = m.description != null ? String(m.description) : ''
 
@@ -729,6 +809,90 @@ function normalizeDetailFakeScore(dbStored, outputObj) {
   if (out != null && !Number.isNaN(Number(out))) return Number(out)
   if (outputObj?.overall_risk != null && !Number.isNaN(Number(outputObj.overall_risk))) return Number(outputObj.overall_risk)
   return null
+}
+
+/**
+ * 风险档位（normalizeRiskLevel）按 0–100 与 fake_score 入库列对齐；
+ * 勿传入已归一化到 0–10 的展示分，否则会把 9 误判成「低风险」。
+ */
+function fakeScoreForRiskBand(dbStored, outputObj) {
+  const d = Number(dbStored)
+  if (!Number.isNaN(d)) {
+    if (d > 10) return d
+    if (d >= 0 && d <= 10) return d * 10
+  }
+  const out = outputObj?.fakeScore ?? outputObj?.fake_score ?? outputObj?.overall_risk
+  const n = Number(out)
+  if (!Number.isNaN(n)) {
+    if (n > 10) return n
+    if (n >= 0 && n <= 10) return n * 10
+  }
+  return null
+}
+
+/**
+ * 可信指数：显式 credibility → 再用 0–10 FakeScore 推导（与工作流一致）→ 最后才用 dimensions（避免陈旧维度盖住真值）。
+ */
+function pickCredibilityScore(wf, latestAnalysis, fakeScoreDisplay) {
+  const raw =
+    wf?.credibilityScore ??
+    wf?.credibility_score ??
+    wf?.credibility ??
+    latestAnalysis?.credibilityScore
+  if (raw != null && raw !== '') {
+    const n = Number(raw)
+    if (!Number.isNaN(n)) {
+      if (n >= 0 && n <= 1) return Number((n * 100).toFixed(2))
+      return Number(n.toFixed(2))
+    }
+  }
+  if (
+    fakeScoreDisplay != null &&
+    !Number.isNaN(Number(fakeScoreDisplay)) &&
+    fakeScoreDisplay >= 0 &&
+    fakeScoreDisplay <= 10
+  ) {
+    return Number((100 - Number(fakeScoreDisplay) * 10).toFixed(2))
+  }
+  const dim = wf?.dimensions || latestAnalysis?.dimensions
+  if (dim && typeof dim === 'object') {
+    const nums = [dim.factConsistency, dim.sourceCredibility]
+      .map((x) => Number(x))
+      .filter((x) => !Number.isNaN(x))
+    if (nums.length) {
+      return Number((nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(2))
+    }
+  }
+  return null
+}
+
+/**
+ * 详情 API：风险等级与工作流样例对齐，输出 low / medium / high；库内中文或缺省时映射，非标字符串原样返回。
+ */
+function workflowRiskLevelForApiPayload(rawRiskLevel, fakeForRiskBand) {
+  const v = rawRiskLevel
+  if (v == null || v === '') {
+    const inferred = normalizeRiskLevel(null, fakeForRiskBand)
+    if (inferred === '低风险') return 'low'
+    if (inferred === '中风险') return 'medium'
+    if (inferred === '高风险') return 'high'
+    return null
+  }
+  const s = String(v).trim()
+  if (/^low$/i.test(s)) return 'low'
+  if (/^medium$/i.test(s)) return 'medium'
+  if (/^high$/i.test(s)) return 'high'
+  if (s === '低风险') return 'low'
+  if (s === '中风险') return 'medium'
+  if (s === '高风险') return 'high'
+  if (s === '待评估' || s === '未知' || /^pending$/i.test(s)) {
+    const inferred = normalizeRiskLevel(null, fakeForRiskBand)
+    if (inferred === '低风险') return 'low'
+    if (inferred === '中风险') return 'medium'
+    if (inferred === '高风险') return 'high'
+    return null
+  }
+  return s
 }
 
 app.get('/api/v1/news/:id', async (req, res, next) => {
@@ -772,72 +936,99 @@ app.get('/api/v1/news/:id', async (req, res, next) => {
 
   let latestAnalysis = null
   let outputObj = {}
+  let wf = {}
   if (arRows.length) {
     const ar = arRows[0]
     outputObj = parseJsonSafe(ar.outputJson, {})
+    wf = coalesceWorkflowPayload(outputObj)
     latestAnalysis = {
       fakeScore: Number(ar.fakeScore),
       riskLevel: ar.riskLevel,
       analyzedAt: ar.analyzedAt,
-      credibilityScore: outputObj.credibilityScore,
-      verdict: outputObj.verdict,
-      reasons: outputObj.reasons,
-      suggestions: outputObj.suggestions,
-      facts: outputObj.facts,
-      risk: outputObj.risk,
-      dimensions: outputObj.dimensions,
-      meta: outputObj.meta,
-      aiSummary: outputObj.aiSummary,
+      credibilityScore: wf.credibilityScore ?? wf.credibility_score,
+      verdict: wf.verdict ?? wf.overallConclusion ?? wf.overall_conclusion ?? null,
+      reasons: wf.reasons,
+      suggestions: wf.suggestions,
+      facts: wf.facts,
+      risk: wf.risk,
+      dimensions: wf.dimensions,
+      meta: wf.meta,
+      aiSummary: wf.aiSummary ?? wf.ai_summary,
     }
   }
 
-  const lang = row.language || 'unknown'
+  const langRaw = wf.lang ?? wf.language ?? row.language
+  const lang = langRaw != null && String(langRaw).trim() ? String(langRaw).trim() : 'unknown'
   const chinaRelated =
-    outputObj.chinaRelated != null
-      ? Boolean(outputObj.chinaRelated)
-      : inferChinaRelated(row.title, row.content)
+    wf.chinaRelated != null
+      ? Boolean(wf.chinaRelated)
+      : wf.china_related != null
+        ? Boolean(wf.china_related)
+        : inferChinaRelated(row.title, row.content)
 
   const dbFake = arRows.length ? arRows[0].fakeScore : null
-  const fakeScore = normalizeDetailFakeScore(dbFake, outputObj)
+  const fakeScore = normalizeDetailFakeScore(dbFake, wf)
+  const fakeForRiskBand = fakeScoreForRiskBand(dbFake, wf)
 
   const rawRiskDetail =
-    latestAnalysis?.riskLevel ?? outputObj.riskLevel ?? outputObj.risk_level ?? outputObj.risk ?? null
-  const riskLevel =
-    normalizeRiskLevel(rawRiskDetail, fakeScore) ?? normalizeRiskLevel(null, fakeScore) ?? '未评级'
+    wf.riskLevel ??
+    wf.risk_level ??
+    (typeof wf.risk === 'string' ? wf.risk : null) ??
+    (arRows.length ? arRows[0].riskLevel : null)
+  const riskLevel = workflowRiskLevelForApiPayload(rawRiskDetail, fakeForRiskBand)
 
-  const credibilityScore =
-    latestAnalysis?.credibilityScore ??
-    outputObj.credibilityScore ??
-    (fakeScore != null && !Number.isNaN(Number(fakeScore))
-      ? Number((100 - Number(fakeScore) * 10).toFixed(2))
-      : null)
+  const credibilityScore = pickCredibilityScore(wf, latestAnalysis, fakeScore)
+
+  const summary =
+    wf.summary != null && String(wf.summary).trim() ? String(wf.summary).trim() : ''
+
+  const publishedAt = wf.publishedAt ?? wf.published_at ?? row.publishedAt
 
   const payload = {
     id: row.id,
     newsUid: row.newsUid,
-    title: row.title,
-    titleCN: outputObj.titleCN ?? outputObj.title_cn ?? null,
-    summary: row.description || '',
-    source: row.source,
-    url: row.url,
-    content: row.content,
-    contentCN: outputObj.contentCN ?? outputObj.content_cn ?? null,
+    title: wf.title != null && String(wf.title).trim() ? String(wf.title).trim() : row.title,
+    titleCN: wf.titleCN ?? wf.title_cn ?? null,
+    summary,
+    source: wf.source != null && String(wf.source).trim() ? String(wf.source).trim() : row.source,
+    url: wf.url != null && String(wf.url).trim() ? String(wf.url).trim() : row.url,
+    content: wf.content ?? wf.body ?? wf.article ?? row.content,
+    contentCN: wf.contentCN ?? wf.content_cn ?? null,
     description: row.description,
-    publishedAt: row.publishedAt,
+    publishedAt,
     lang,
     language: lang,
-    country: row.country,
+    country: wf.country != null && String(wf.country).trim() ? String(wf.country).trim() : row.country,
     chinaRelated,
-    facts: latestAnalysis?.facts ?? outputObj.facts ?? [],
+    facts: Array.isArray(wf.facts) ? wf.facts : [],
     fakeScore,
     riskLevel,
-    riskReason: pickRiskReason(latestAnalysis ? { ...latestAnalysis, risk: outputObj.risk } : {}, outputObj),
-    multiSourceCheck: pickMultiSourceCheckStrict(outputObj),
+    riskReason: pickRiskReason(latestAnalysis ? { ...latestAnalysis, risk: wf.risk } : {}, wf),
+    multiSourceCheck: arRows.length
+      ? (() => {
+          const picked = pickMultiSourceCheckStrict(wf)
+          return (
+            picked || {
+              isSameEvent: null,
+              isConsistent: null,
+              hasAuthoritySource: null,
+              description: '',
+              mcpRelatedArticles: [],
+            }
+          )
+        })()
+      : null,
     credibilityScore,
-    verdict: latestAnalysis?.verdict ?? null,
-    reasons: latestAnalysis?.reasons ?? outputObj.reasons ?? [],
-    suggestions: latestAnalysis?.suggestions ?? outputObj.suggestions ?? [],
-    dimensions: latestAnalysis?.dimensions ?? outputObj.dimensions ?? null,
+    verdict:
+      wf.verdict ??
+      wf.overallConclusion ??
+      wf.overall_conclusion ??
+      wf.conclusion ??
+      latestAnalysis?.verdict ??
+      null,
+    reasons: Array.isArray(wf.reasons) ? wf.reasons : [],
+    suggestions: Array.isArray(wf.suggestions) ? wf.suggestions : [],
+    dimensions: wf.dimensions ?? null,
     latestAnalysis,
     rawWorkflow: cloneForJsonResponse(outputObj),
   }
@@ -1511,10 +1702,16 @@ function normalizeDashscopeWorkflowItemsLegacy(obj) {
   if (!obj) return []
   if (Array.isArray(obj)) return obj
   if (Array.isArray(obj.newsAnalysis)) return obj.newsAnalysis
+  if (Array.isArray(obj.articles)) return obj.articles
+  if (Array.isArray(obj.articleList)) return obj.articleList
+  if (Array.isArray(obj.newsList)) return obj.newsList
   if (Array.isArray(obj.items)) return obj.items
   if (Array.isArray(obj.results)) return obj.results
   if (Array.isArray(obj.news)) return obj.news
+  if (Array.isArray(obj.records)) return obj.records
   if (Array.isArray(obj.data?.items)) return obj.data.items
+  if (Array.isArray(obj.data?.newsAnalysis)) return obj.data.newsAnalysis
+  if (Array.isArray(obj.data?.articles)) return obj.data.articles
   if (obj.news && Array.isArray(obj.news.items)) return obj.news.items
   if (obj.title || obj.content || obj.url || obj.news_uid || obj.newsUid) return [obj]
   return []
@@ -1530,6 +1727,10 @@ function normalizeDashscopeWorkflowItemsLegacy(obj) {
 function extractWorkflowResult(workflowJson) {
   const empty = { items: [], meta: null }
   if (workflowJson == null) return empty
+
+  if (Array.isArray(workflowJson)) {
+    return { items: workflowJson, meta: null }
+  }
 
   const metaFrom = (obj) => {
     if (!obj || typeof obj !== 'object') return null
@@ -1547,17 +1748,75 @@ function extractWorkflowResult(workflowJson) {
     }
   }
 
-  // 新格式：result 包裹
+  // 百炼：output.text 内再包一层 JSON
+  if (workflowJson.output?.text != null && typeof workflowJson.output.text === 'string') {
+    const inner =
+      tryParseJsonString(workflowJson.output.text) || extractJsonFromText(workflowJson.output.text)
+    if (inner && typeof inner === 'object') {
+      const nested = extractWorkflowResult(inner)
+      if (nested.items.length) return nested
+    }
+  }
+
+  // output 为对象：递归其余字段（避免与上方 output.text 形成无限递归）
+  if (workflowJson.output != null && typeof workflowJson.output === 'object' && !Array.isArray(workflowJson.output)) {
+    const { text: _omitText, ...restOut } = workflowJson.output
+    if (Object.keys(restOut).length > 0) {
+      const nested = extractWorkflowResult(restOut)
+      if (nested.items.length) return nested
+    }
+  }
+
+  // result 本身就是多篇数组（新版工作流常见）
+  if (Array.isArray(workflowJson.result)) {
+    return { items: workflowJson.result, meta: null }
+  }
+
+  // result 为字符串：可能是内嵌 JSON，也可能是模型拒答等纯文本
+  if (workflowJson.result != null && typeof workflowJson.result === 'string') {
+    const s = String(workflowJson.result).trim()
+    const inner = tryParseJsonString(s) || extractJsonFromText(s)
+    if (inner && typeof inner === 'object') {
+      const nested = extractWorkflowResult(inner)
+      if (nested.items.length) return nested
+      const legacy = normalizeDashscopeWorkflowItemsLegacy(inner)
+      if (legacy.length) return { items: legacy, meta: null }
+    }
+  }
+
+  // 新格式：result 包裹对象
   if (workflowJson.result && typeof workflowJson.result === 'object') {
     const r = workflowJson.result
     if (Array.isArray(r.newsAnalysis)) {
       return { items: r.newsAnalysis, meta: metaFrom(r) }
     }
+    if (Array.isArray(r.articles)) {
+      return { items: r.articles, meta: metaFrom(r) }
+    }
+    if (Array.isArray(r.items)) {
+      return { items: r.items, meta: metaFrom(r) }
+    }
+    if (Array.isArray(r.data)) {
+      return { items: r.data, meta: metaFrom(r) }
+    }
+    if (Array.isArray(r.records)) {
+      return { items: r.records, meta: metaFrom(r) }
+    }
+    const fromR = normalizeDashscopeWorkflowItemsLegacy(r)
+    if (fromR.length) {
+      return { items: fromR, meta: metaFrom(r) }
+    }
   }
 
-  // 新格式：顶层平铺（无 result）
+  // 顶层平铺（无 result）
   if (Array.isArray(workflowJson.newsAnalysis)) {
     return { items: workflowJson.newsAnalysis, meta: metaFrom(workflowJson) }
+  }
+  if (Array.isArray(workflowJson.articles)) {
+    return { items: workflowJson.articles, meta: metaFrom(workflowJson) }
+  }
+  if (Array.isArray(workflowJson.items)) {
+    return { items: workflowJson.items, meta: metaFrom(workflowJson) }
   }
 
   // 旧版：res3.res 为字符串 JSON
@@ -1747,6 +2006,21 @@ async function runNewsWorkflowHandler(req, res) {
     const { items, meta: workflowMeta } = extractWorkflowResult(parsed)
 
     if (!items.length) {
+      const r = parsed && typeof parsed === 'object' ? parsed.result : null
+      if (typeof r === 'string' && r.trim()) {
+        const t = r.trim()
+        const looksStructured =
+          (t.startsWith('{') && t.includes('}')) || (t.startsWith('[') && t.includes(']'))
+        if (!looksStructured) {
+          return res.status(502).json(
+            fail(
+              '工作流返回的 result 为普通文本而非新闻 JSON（常见为模型拒答，或结束节点未输出结构化字段）。请在百炼工作流中约束最终输出为含 newsAnalysis / items / articles 等数组的 JSON。',
+              502,
+              'WORKFLOW_PARSE_ERROR',
+            ),
+          )
+        }
+      }
       return res.status(502).json(fail('工作流未返回可解析的新闻结果', 502, 'WORKFLOW_PARSE_ERROR'))
     }
 
@@ -1767,7 +2041,19 @@ async function runNewsWorkflowHandler(req, res) {
 
       const newsSummary = merged?.summary || merged?.newsSummary || merged?.ai_summary || merged?.aiSummary || null
 
-      const outputJson = merged
+      const WORKFLOW_RAW_TEXT_CAP = 600000
+      const outputJson = {
+        ...merged,
+        _truthLensWorkflowCapture: {
+          workflowRunSalt,
+          workflowItemIndex: itemIndex,
+          capturedAt: new Date().toISOString(),
+          rawOutputText:
+            typeof workflowText === 'string' ? workflowText.slice(0, WORKFLOW_RAW_TEXT_CAP) : null,
+          rawOutputTextWasTruncated:
+            typeof workflowText === 'string' && workflowText.length > WORKFLOW_RAW_TEXT_CAP,
+        },
+      }
       const outputObj = merged
       const fakeRaw =
         merged?.fake_score ??

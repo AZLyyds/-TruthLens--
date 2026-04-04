@@ -36,7 +36,7 @@ function mockNewsDetail(id) {
     chinaRelated: true,
     facts: mockSingleAnalysis.facts || [],
     fakeScore,
-    riskLevel: it.risk || mockSingleAnalysis.riskLevel,
+    riskLevel: 'medium',
     riskReason: (mockSingleAnalysis.reasons || []).join('；') || '示例风险说明',
     credibilityScore: mockSingleAnalysis.credibilityScore,
     verdict: mockSingleAnalysis.verdict,
@@ -55,7 +55,7 @@ function mockNewsDetail(id) {
     },
     latestAnalysis: {
       fakeScore,
-      riskLevel: it.risk || mockSingleAnalysis.riskLevel,
+      riskLevel: 'medium',
       credibilityScore: mockSingleAnalysis.credibilityScore,
       verdict: mockSingleAnalysis.verdict,
       reasons: mockSingleAnalysis.reasons,

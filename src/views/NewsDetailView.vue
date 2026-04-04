@@ -32,8 +32,8 @@ function formatTime(value) {
 
 function riskBand(level) {
   const s = String(level || '')
-  if (s.includes('高')) return 'high'
-  if (s.includes('中')) return 'mid'
+  if (s.includes('高') || /^high$/i.test(s)) return 'high'
+  if (s.includes('中') || /^medium$/i.test(s) || /^mid$/i.test(s)) return 'mid'
   return 'low'
 }
 
@@ -84,12 +84,6 @@ const fakePct = computed(() => {
   return (clamped / 10) * 100
 })
 
-const ms = computed(() => {
-  const m = detail.value?.multiSourceCheck
-  if (!m || typeof m !== 'object') return null
-  return m
-})
-
 function fmtMsBool(v) {
   if (v === true) return '是'
   if (v === false) return '否'
@@ -105,6 +99,25 @@ function fmtConsistent(v) {
   if (v == null || v === '') return '—'
   return String(v)
 }
+
+function fmtChinaRelated(v) {
+  if (v === true) return '是'
+  if (v === false) return '否'
+  return '—'
+}
+
+const ms = computed(() => {
+  if (!detail.value?.latestAnalysis) return null
+  const m = detail.value.multiSourceCheck
+  if (m && typeof m === 'object') return m
+  return {
+    isSameEvent: null,
+    isConsistent: null,
+    hasAuthoritySource: null,
+    description: '',
+    mcpRelatedArticles: [],
+  }
+})
 
 async function loadRelated(current) {
   try {
@@ -237,13 +250,12 @@ onMounted(() => {
             <div v-else class="nd-sticky-score nd-sticky-score--muted">
               <span class="nd-sticky-label">可信指数</span>
               <strong>—</strong>
-              <span class="nd-sticky-hint">完成深度分析后显示</span>
             </div>
             <div class="nd-sticky-risk">
               <span class="nd-chip" :class="'nd-chip--' + riskBand(detail.riskLevel)">
-                {{ detail.riskLevel || '未评估' }}
+                {{ detail.riskLevel || '—' }}
               </span>
-              <span v-if="fakePct != null" class="nd-fake">风险分值 {{ detail.fakeScore }}</span>
+              <span v-if="fakePct != null" class="nd-fake">虚假评分 {{ detail.fakeScore }}</span>
             </div>
           </div>
         </div>
@@ -253,24 +265,63 @@ onMounted(() => {
             <span v-if="detail.source" class="nd-pill">{{ detail.source }}</span>
             <span class="nd-time">{{ formatTime(detail.publishedAt) }}</span>
             <span class="nd-pill nd-pill--soft">{{ detail.lang || detail.language || '—' }}</span>
-            <span v-if="detail.chinaRelated" class="nd-pill nd-pill--cn">涉华</span>
+            <span v-if="detail.chinaRelated === true" class="nd-pill nd-pill--cn">涉华</span>
+            <span v-else-if="detail.chinaRelated === false" class="nd-pill nd-pill--soft">非涉华</span>
           </div>
-          <h2 class="nd-title">{{ detail.title || '无标题' }}</h2>
+          <h2 class="nd-title">{{ detail.title || '—' }}</h2>
           <p v-if="detail.titleCN" class="nd-title-sub">{{ detail.titleCN }}</p>
-          <p class="nd-summary">{{ detail.summary || detail.description || '暂无概括' }}</p>
+          <div class="nd-analysis-wrap">
+            <span class="nd-eyebrow nd-eyebrow--hero">总结（summary）</span>
+            <p class="nd-summary">{{ detail.summary != null && String(detail.summary).trim() ? String(detail.summary).trim() : '—' }}</p>
+          </div>
           <a v-if="detail.url" :href="detail.url" class="nd-link" target="_blank" rel="noopener noreferrer">
             原文链接 ↗
           </a>
         </article>
 
+        <section v-if="detail.latestAnalysis" class="nd-card card nd-wf-fields">
+          <header class="nd-sec-head">
+            <h3>工作流核心字段</h3>
+            <span class="nd-sec-sub">与百炼单篇 JSON 一一对应（无分析记录时不展示本块）</span>
+          </header>
+          <dl class="nd-wf-dl">
+            <div class="nd-wf-dl-row">
+              <dt>总结（summary）</dt>
+              <dd>{{ detail.summary != null && String(detail.summary).trim() ? String(detail.summary).trim() : '—' }}</dd>
+            </div>
+            <div class="nd-wf-dl-row">
+              <dt>是否涉华（chinaRelated）</dt>
+              <dd>{{ fmtChinaRelated(detail.chinaRelated) }}</dd>
+            </div>
+            <div class="nd-wf-dl-row">
+              <dt>虚假评分（fakeScore）</dt>
+              <dd>{{ detail.fakeScore != null && !Number.isNaN(Number(detail.fakeScore)) ? detail.fakeScore : '—' }}</dd>
+            </div>
+            <div class="nd-wf-dl-row">
+              <dt>风险等级（riskLevel）</dt>
+              <dd>{{ detail.riskLevel || '—' }}</dd>
+            </div>
+            <div class="nd-wf-dl-row">
+              <dt>风险原因（riskReason）</dt>
+              <dd class="nd-wf-dl-dd--pre">
+                {{
+                  detail.riskReason?.trim() ||
+                    (Array.isArray(detail.reasons) && detail.reasons.length ? detail.reasons.join('；') : '') ||
+                    '—'
+                }}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
         <section class="nd-card card">
           <header class="nd-sec-head">
-            <h3>可信度概览</h3>
-            <span class="nd-sec-sub">FakeScore 与风险等级</span>
+            <h3>可信度与其它分析</h3>
+            <span class="nd-sec-sub">可信指数为接口推导；事实要点来自工作流 facts</span>
           </header>
-          <div class="nd-cred-grid">
+          <div class="nd-cred-grid nd-cred-grid--single">
             <div class="nd-cred-block">
-              <span class="nd-cred-label">可信指数（Credibility）</span>
+              <span class="nd-cred-label">可信指数（credibilityScore）</span>
               <div class="nd-cred-num-row">
                 <strong class="nd-cred-num">{{ detail.credibilityScore != null ? detail.credibilityScore : '—' }}</strong>
                 <span class="nd-cred-scale">/ 100</span>
@@ -279,85 +330,81 @@ onMounted(() => {
                 <i class="nd-bar-fill nd-bar-fill--cred" :style="{ width: credibilityPct + '%' }" />
               </div>
             </div>
-            <div class="nd-cred-block">
-              <span class="nd-cred-label">风险分值（FakeScore）</span>
-              <div class="nd-cred-num-row">
-                <strong class="nd-cred-num">{{ detail.fakeScore != null ? detail.fakeScore : '—' }}</strong>
-                <span class="nd-cred-scale">越高越需警惕</span>
-              </div>
-              <div v-if="fakePct != null" class="nd-bar">
-                <i class="nd-bar-fill nd-bar-fill--risk" :style="{ width: fakePct + '%' }" />
-              </div>
-            </div>
           </div>
-          <div class="nd-verdict">
-            <span class="nd-verdict-label">综合判断</span>
-            <span class="nd-verdict-val">{{ detail.verdict || '待分析' }}</span>
+          <div v-if="detail.verdict != null && String(detail.verdict).trim()" class="nd-verdict">
+            <span class="nd-verdict-label">综合判断（verdict）</span>
+            <span class="nd-verdict-val">{{ String(detail.verdict).trim() }}</span>
           </div>
-          <p class="nd-risk-reason">
-            <span class="nd-eyebrow">核心风险原因</span>
-            {{ detail.riskReason || (Array.isArray(detail.reasons) && detail.reasons.length ? detail.reasons.join('；') : '暂无，请先进行深度分析或等待流水线写入。') }}
-          </p>
-          <ul v-if="detail.facts?.length" class="nd-facts">
-            <li v-for="(f, i) in detail.facts" :key="i">
-              <template v-if="typeof f === 'object' && f">
-                {{ [f.time, f.subject, f.event].filter(Boolean).join(' · ') }}
-              </template>
-              <template v-else>{{ f }}</template>
-            </li>
-          </ul>
+          <template v-if="detail.facts?.length">
+            <span class="nd-eyebrow nd-eyebrow--facts">事实要点（facts）</span>
+            <ul class="nd-facts">
+              <li v-for="(f, i) in detail.facts" :key="i">
+                <template v-if="typeof f === 'object' && f">
+                  {{ [f.time, f.subject, f.event].filter(Boolean).join(' · ') }}
+                </template>
+                <template v-else>{{ f }}</template>
+              </li>
+            </ul>
+          </template>
         </section>
 
-        <section class="nd-card card">
+        <section v-if="detail.latestAnalysis" class="nd-card card">
           <header class="nd-sec-head">
-            <h3>多源核验</h3>
+            <h3>多源核验（multiSourceCheck）</h3>
+            <span class="nd-sec-sub">字段全部来自接口，空项显示为「—」；相关报道仅数组内容</span>
           </header>
-          <div v-if="ms" class="nd-ms">
+          <div class="nd-ms">
             <div class="nd-ms-mcp">
               <div class="nd-ms-kpi">
                 <div class="nd-ms-kpi-cell">
-                  <span class="nd-ms-kpi-k">是否为同一事件</span>
+                  <span class="nd-ms-kpi-k">是否同一事件（isSameEvent）</span>
                   <span class="nd-ms-kpi-v">{{ fmtMsBool(ms.isSameEvent) }}</span>
                 </div>
                 <div class="nd-ms-kpi-cell">
-                  <span class="nd-ms-kpi-k">信息一致性</span>
+                  <span class="nd-ms-kpi-k">信息一致性（isConsistent）</span>
                   <span class="nd-ms-kpi-v">{{ fmtConsistent(ms.isConsistent) }}</span>
                 </div>
                 <div class="nd-ms-kpi-cell">
-                  <span class="nd-ms-kpi-k">是否存在权威信源</span>
+                  <span class="nd-ms-kpi-k">是否有权威信源（hasAuthoritySource）</span>
                   <span class="nd-ms-kpi-v">{{ fmtMsBool(ms.hasAuthoritySource) }}</span>
                 </div>
               </div>
 
               <div class="nd-ms-block">
-                <span class="nd-ms-block-title">写实核查说明</span>
-                <div class="nd-ms-desc">{{ ms.description }}</div>
+                <span class="nd-ms-block-title">写实核查说明（description）</span>
+                <div class="nd-ms-desc">{{ ms.description != null && String(ms.description).trim() ? ms.description : '—' }}</div>
               </div>
 
               <div class="nd-ms-block">
-                <span class="nd-ms-block-title">相关报道（MCP）</span>
+                <span class="nd-ms-block-title">相关报道（mcpRelatedArticles）</span>
                 <ul v-if="mcpArticlesList(ms).length" class="nd-ms-art-list nd-ms-art-list--plain">
                   <li v-for="(row, idx) in mcpArticlesList(ms)" :key="idx" class="nd-ms-art-line">
                     {{ row?.title }} - {{ row?.source }}
                   </li>
                 </ul>
-                <p v-else class="nd-ms-empty">暂无 MCP 相关报道</p>
+                <p v-else class="nd-ms-empty">暂无相关报道</p>
               </div>
             </div>
           </div>
-          <p v-else class="nd-muted">暂无多源核验数据</p>
+        </section>
+        <section v-if="!detail.latestAnalysis" class="nd-card card">
+          <p class="nd-muted">暂无单篇工作流分析记录。</p>
         </section>
 
         <section class="nd-card card nd-body-card">
           <header class="nd-sec-head nd-sec-head--row">
             <div>
               <h3>正文</h3>
-              <span class="nd-sec-sub">原文与中文对照</span>
+              <span class="nd-sec-sub">原文标题对应正文与中文摘要（contentCN）</span>
             </div>
             <div class="nd-font-tools">
               <button type="button" class="nd-font-btn" :disabled="fontStep <= 0" @click="bumpFont(-1)">A−</button>
               <button type="button" class="nd-font-btn" :disabled="fontStep >= 2" @click="bumpFont(1)">A+</button>
-              <button type="button" class="nd-copy-btn" @click="copyPlain((detail.content || '') + '\n\n' + (detail.contentCN || ''))">
+              <button
+                type="button"
+                class="nd-copy-btn"
+                @click="copyPlain([detail.content, detail.contentCN].filter((x) => x && String(x).trim()).join('\n\n'))"
+              >
                 复制全文
               </button>
             </div>
@@ -366,13 +413,13 @@ onMounted(() => {
             <div class="nd-body-col">
               <span class="nd-body-label">原文 / 采集正文</span>
               <div class="nd-prose nd-prose--orig" :style="{ fontSize: bodyFontPx + 'px' }">
-                {{ detail.content?.trim() || '暂无正文' }}
+                {{ detail.content?.trim() || '—' }}
               </div>
             </div>
             <div class="nd-body-col nd-body-col--cn">
-              <span class="nd-body-label">中文摘要 / 对照</span>
+              <span class="nd-body-label">中文摘要（contentCN）</span>
               <div class="nd-prose nd-prose--cn" :style="{ fontSize: bodyFontPx + 'px' }">
-                {{ detail.contentCN?.trim() || detail.summary || '暂无中文对照，可使用标题下方概括。' }}
+                {{ detail.contentCN != null && String(detail.contentCN).trim() ? String(detail.contentCN).trim() : '—' }}
               </div>
             </div>
           </div>
@@ -594,8 +641,17 @@ onMounted(() => {
   line-height: 1.5;
 }
 
-.nd-summary {
+.nd-analysis-wrap {
   margin: 0 0 14px;
+}
+
+.nd-eyebrow--hero {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.nd-summary {
+  margin: 0;
   font-size: 15px;
   line-height: 1.65;
   color: #334155;
@@ -648,8 +704,58 @@ onMounted(() => {
   gap: 14px;
 }
 
+.nd-cred-grid--single {
+  grid-template-columns: 1fr;
+  max-width: 420px;
+}
+
 @media (max-width: 640px) {
   .nd-cred-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nd-wf-dl {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.nd-wf-dl-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) 1fr;
+  gap: 12px 20px;
+  align-items: start;
+  padding: 12px 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.nd-wf-dl-row:last-child {
+  border-bottom: none;
+}
+
+.nd-wf-dl dt {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.nd-wf-dl dd {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #1e293b;
+  word-break: break-word;
+}
+
+.nd-wf-dl-dd--pre {
+  white-space: pre-wrap;
+}
+
+@media (max-width: 640px) {
+  .nd-wf-dl-row {
     grid-template-columns: 1fr;
   }
 }
@@ -735,13 +841,6 @@ onMounted(() => {
   color: #0f172a;
 }
 
-.nd-risk-reason {
-  margin: 14px 0 0;
-  font-size: 14px;
-  line-height: 1.6;
-  color: #334155;
-}
-
 .nd-eyebrow {
   display: block;
   font-size: 11px;
@@ -752,8 +851,12 @@ onMounted(() => {
   margin-bottom: 6px;
 }
 
+.nd-eyebrow--facts {
+  margin-top: 16px;
+}
+
 .nd-facts {
-  margin: 14px 0 0;
+  margin: 8px 0 0;
   padding-left: 1.1rem;
   font-size: 13px;
   line-height: 1.55;

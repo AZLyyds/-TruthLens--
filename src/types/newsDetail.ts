@@ -6,7 +6,7 @@ export interface McpRelatedArticleRef {
   source: string
 }
 
-/** 工作流 multiSourceCheck（仅五字段，与后端 output_json.multiSourceCheck 一致） */
+/** 工作流 multiSourceCheck（与 output_json.multiSourceCheck 一致） */
 export interface NewsMultiSourceCheck {
   isSameEvent: boolean | null
   isConsistent: string | null
