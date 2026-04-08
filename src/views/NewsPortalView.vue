@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { fetchDashboardOverview, fetchDashboardTrends } from '../api/dashboard'
 import { fetchNewsDetail, fetchNewsList } from '../api/news'
 import { runNewsWorkflow } from '../api/workflow'
+import CdsWordCloud from '../components/wordcloud/CdsWordCloud.vue'
 
 const router = useRouter()
 const isLoading = ref(false)
@@ -350,16 +351,11 @@ onMounted(async () => {
           <article class="overview-card cloud-card card">
             <header class="section-head"><h3>热点关键词云</h3><span>{{ keywordCloud.length }} 个热点词</span></header>
             <div class="keyword-cloud">
-              <button
-                v-for="word in keywordCloud"
-                :key="word.name"
-                type="button"
-                :class="['chip', { active: selectedKeyword === word.name }]"
-                :style="{ fontSize: `${word.size}px` }"
-                @click="applyKeywordChip(word.name)"
-              >
-                {{ word.name }}
-              </button>
+              <CdsWordCloud
+                :words="keywordCloud.map((w) => ({ text: w.name, size: w.size }))"
+                :selected="selectedKeyword"
+                @select="applyKeywordChip"
+              />
             </div>
           </article>
 
@@ -613,13 +609,9 @@ onMounted(async () => {
 }
 
 .keyword-cloud {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-  align-content: flex-start;
-  justify-content: flex-start;
-  height: calc(100% - 26px);
+  height: 160px;
   overflow: hidden;
+  position: relative;
 }
 
 .chip {

@@ -1565,10 +1565,11 @@ button.history-detail__collapse {
   margin-top: 8px;
   min-height: 0;
   flex: 1 1 auto;
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  gap: 7px;
+  display: block;
+  width: 100%;
+  height: 220px;
+  overflow: hidden;
+  position: relative;
 }
 .key-item {
   border: 1px solid rgba(121, 162, 236, 0.35);
