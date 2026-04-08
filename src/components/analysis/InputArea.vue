@@ -1,8 +1,32 @@
 <script setup lang="ts">
-defineProps<{ loading: boolean }>()
+import { computed } from 'vue'
+import type { AnalysisResult } from '../../types/analysis'
+
+const props = defineProps<{
+  loading: boolean
+  result?: AnalysisResult | null
+}>()
 
 const model = defineModel<string>({ required: true })
 const emit = defineEmits<{ analyze: [] }>()
+
+const structuredReport = computed(() => {
+  const r = props.result
+  if (!r) return null
+
+  const risk = String(r.riskLevel || '未判定')
+  const score = Number(r.credibilityScore)
+  const scoreText = Number.isNaN(score) ? '—' : `${Math.round(score)}`
+  const title = String(r.meta?.newsTitle || '').trim() || '本次输入文本'
+  const detailedText = String(r.detailedReport || '').trim()
+
+  return {
+    title,
+    risk,
+    scoreText,
+    detailedText,
+  }
+})
 </script>
 
 <template>
@@ -39,17 +63,37 @@ const emit = defineEmits<{ analyze: [] }>()
     </section>
 
     <aside class="in-aside">
-      <p class="in-aside-title">TruthLens</p>
-      <ul class="in-aside-list">
-        <li>多源信息抽取与交叉验证</li>
-        <li>可信度与风险维度量化</li>
-        <li>可追溯分析路径</li>
-      </ul>
-      <div class="in-aside-badge" aria-hidden="true">
-        <span class="in-badge-dot" />
-        <span class="in-badge-dot" />
-        <span class="in-badge-dot" />
-      </div>
+      <template v-if="structuredReport">
+        <div class="in-report">
+          <div class="in-report-head">
+            <p class="in-aside-title">AI 总结报告</p>
+            <span class="in-report-risk">{{ structuredReport.risk }}</span>
+          </div>
+          <p class="in-report-title" :title="structuredReport.title">{{ structuredReport.title }}</p>
+          <p class="in-report-line">
+            可信度评分：<strong>{{ structuredReport.scoreText }}</strong> / 100
+          </p>
+          <p class="in-report-text">
+            {{
+              structuredReport.detailedText ||
+              '该文本已完成结构化核验，建议结合关键证据点与执行建议进行复核处置。'
+            }}
+          </p>
+        </div>
+      </template>
+      <template v-else>
+        <p class="in-aside-title">TruthLens</p>
+        <ul class="in-aside-list">
+          <li>多源信息抽取与交叉验证</li>
+          <li>可信度与风险维度量化</li>
+          <li>可追溯分析路径</li>
+        </ul>
+        <div class="in-aside-badge" aria-hidden="true">
+          <span class="in-badge-dot" />
+          <span class="in-badge-dot" />
+          <span class="in-badge-dot" />
+        </div>
+      </template>
     </aside>
   </div>
 </template>
@@ -64,8 +108,8 @@ const emit = defineEmits<{ analyze: [] }>()
   padding: 18px 16px 20px;
   border-radius: 16px;
   background:
-    radial-gradient(ellipse 120% 90% at 100% 0%, rgba(0, 113, 227, 0.09), transparent 55%),
-    radial-gradient(ellipse 90% 70% at 0% 100%, rgba(88, 86, 214, 0.07), transparent 50%),
+    radial-gradient(ellipse 120% 90% at 100% 0%, rgba(185, 28, 28, 0.08), transparent 55%),
+    radial-gradient(ellipse 90% 70% at 0% 100%, rgba(120, 8, 14, 0.06), transparent 50%),
     linear-gradient(168deg, #f5f6f8 0%, #ebecef 100%);
   border: 1px solid rgba(0, 0, 0, 0.06);
   box-shadow:
@@ -91,7 +135,7 @@ const emit = defineEmits<{ analyze: [] }>()
   left: -80px;
   top: 40%;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(0, 113, 227, 0.07) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(185, 28, 28, 0.08) 0%, transparent 70%);
   pointer-events: none;
 }
 
@@ -101,7 +145,7 @@ const emit = defineEmits<{ analyze: [] }>()
   bottom: 8%;
   width: 140px;
   height: 140px;
-  color: #0071e3;
+  color: #b91c1c;
   opacity: 0.4;
   pointer-events: none;
   z-index: 0;
@@ -177,8 +221,8 @@ const emit = defineEmits<{ analyze: [] }>()
 .in-field:focus {
   outline: none;
   background: #fff;
-  border-color: rgba(0, 113, 227, 0.45);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.2);
+  border-color: rgba(185, 28, 28, 0.45);
+  box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.18);
 }
 
 .in-btn {
@@ -190,7 +234,7 @@ const emit = defineEmits<{ analyze: [] }>()
   font-family: inherit;
   letter-spacing: -0.01em;
   color: #fff;
-  background: #0071e3;
+  background: #b91c1c;
   border: none;
   border-radius: 980px;
   cursor: pointer;
@@ -233,6 +277,69 @@ const emit = defineEmits<{ analyze: [] }>()
   z-index: 1;
   margin-top: auto;
   padding-top: 16px;
+  max-height: 46%;
+  min-height: 140px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.in-report {
+  padding: 12px 12px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(185, 28, 28, 0.18);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(254, 242, 242, 0.9));
+  box-shadow: 0 6px 18px rgba(185, 28, 28, 0.08);
+}
+
+.in-report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.in-report-risk {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #991b1b;
+  background: rgba(185, 28, 28, 0.12);
+}
+
+.in-report-title {
+  margin: 8px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2937;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.in-report-line {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.in-report-line strong {
+  font-weight: 700;
+  color: #7f1d1d;
+}
+
+.in-report-text {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  line-height: 1.62;
+  color: #374151;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .in-aside-title {
@@ -270,8 +377,8 @@ const emit = defineEmits<{ analyze: [] }>()
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: linear-gradient(180deg, #0071e3, #42a5f5);
-  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.15);
+  background: linear-gradient(180deg, #b91c1c, #fca5a5);
+  box-shadow: 0 0 0 2px rgba(185, 28, 28, 0.15);
 }
 
 .in-aside-badge {
@@ -292,6 +399,6 @@ const emit = defineEmits<{ analyze: [] }>()
 
 .in-badge-dot:nth-child(2) {
   opacity: 0.85;
-  background: #0071e3;
+  background: #b91c1c;
 }
 </style>

@@ -65,8 +65,8 @@ defineProps({
   font-size: 14px;
   font-weight: 600;
   font-family: inherit;
-  color: #1d4ed8;
-  background: #f1f5f9;
+  color: #b91c1c;
+  background: #fafaf9;
   border: 1px solid #e2e8f0;
   border-radius: 999px;
   cursor: pointer;
@@ -76,7 +76,7 @@ defineProps({
 }
 
 .bar-back:hover {
-  background: #e0e7ff;
+  background: #fee2e2;
 }
 
 .bar-back:active {
@@ -157,11 +157,11 @@ defineProps({
   font-weight: 600;
   font-family: inherit;
   color: #fff;
-  background: linear-gradient(135deg, #2563eb, #3b82f6);
+  background: linear-gradient(135deg, #b91c1c, #f87171);
   border: none;
   border-radius: 10px;
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25);
+  box-shadow: 0 4px 14px rgba(185, 28, 28, 0.22);
   transition:
     transform 0.15s,
     filter 0.2s;

@@ -142,7 +142,7 @@ const jsonPretty = computed(() => {
 
 .arv-block {
   background: #fff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #e7e5e4;
   border-radius: 12px;
   padding: 14px 16px;
 }
@@ -175,7 +175,7 @@ const jsonPretty = computed(() => {
   display: flex;
   justify-content: space-between;
   font-size: 13px;
-  color: #475569;
+  color: #6b7280;
   margin-bottom: 4px;
 }
 
@@ -187,7 +187,7 @@ const jsonPretty = computed(() => {
 .arv-track {
   height: 8px;
   border-radius: 999px;
-  background: #f1f5f9;
+  background: #fafaf9;
   overflow: hidden;
 }
 
@@ -220,13 +220,13 @@ const jsonPretty = computed(() => {
 .arv-fact {
   padding: 10px 12px;
   border-radius: 10px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: #fafaf9;
+  border: 1px solid #e7e5e4;
 }
 
 .arv-fact__time {
   font-size: 12px;
-  color: #64748b;
+  color: #6b7280;
   margin-right: 8px;
 }
 
@@ -239,7 +239,7 @@ const jsonPretty = computed(() => {
 .arv-fact__meta {
   margin-top: 6px;
   font-size: 12px;
-  color: #64748b;
+  color: #6b7280;
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
@@ -248,7 +248,7 @@ const jsonPretty = computed(() => {
 .arv-empty {
   margin: 0;
   font-size: 13px;
-  color: #94a3b8;
+  color: #6b7280;
 }
 
 .arv-stance {
@@ -259,8 +259,8 @@ const jsonPretty = computed(() => {
 }
 
 .stance--neutral {
-  background: #e0f2fe;
-  color: #0369a1;
+  background: #f5f5f4;
+  color: #44403c;
 }
 .stance--lean {
   background: #fef3c7;
@@ -280,7 +280,7 @@ const jsonPretty = computed(() => {
 .arv-conflicts {
   margin: 0 0 8px;
   padding-left: 18px;
-  color: #475569;
+  color: #6b7280;
   font-size: 13px;
 }
 
@@ -292,7 +292,7 @@ const jsonPretty = computed(() => {
 }
 
 .arv-json-block {
-  background: #f8fafc;
+  background: #fafaf9;
 }
 
 .arv-json-toggle {
@@ -301,14 +301,14 @@ const jsonPretty = computed(() => {
   font: inherit;
   font-size: 13px;
   font-weight: 600;
-  color: #475569;
+  color: #6b7280;
   cursor: pointer;
   padding: 4px 0;
   text-align: left;
 }
 
 .arv-json-toggle:hover {
-  color: #1d4ed8;
+  color: #b91c1c;
 }
 
 .arv-json-pre {
@@ -316,7 +316,7 @@ const jsonPretty = computed(() => {
   padding: 12px;
   border-radius: 8px;
   background: #fff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #e7e5e4;
   font-size: 11px;
   line-height: 1.45;
   color: #334155;

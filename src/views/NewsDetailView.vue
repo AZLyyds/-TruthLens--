@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchNewsDetail, fetchNewsList } from '../api/news'
 import NewsDetailToolbar from '../components/news-detail/NewsDetailToolbar.vue'
@@ -12,6 +12,8 @@ const loading = ref(true)
 const error = ref('')
 const detail = ref(null)
 const related = ref([])
+const relatedStart = ref(0)
+const relatedPageSize = ref(3)
 const fontStep = ref(1)
 const favorited = ref(false)
 
@@ -129,9 +131,11 @@ async function loadRelated(current) {
       const same = rows.filter((x) => x.source === src)
       if (same.length >= 2) rows = same
     }
-    related.value = rows.slice(0, 6)
+    related.value = rows.slice(0, 12)
+    relatedStart.value = 0
   } catch {
     related.value = []
+    relatedStart.value = 0
   }
 }
 
@@ -158,6 +162,29 @@ function goBack() {
 
 function goRelated(item) {
   router.push({ name: 'news-detail', params: { id: String(item.id) } })
+}
+
+function updateRelatedPageSize() {
+  if (window.innerWidth < 760) relatedPageSize.value = 1
+  else if (window.innerWidth < 1180) relatedPageSize.value = 2
+  else relatedPageSize.value = 3
+}
+
+const relatedVisible = computed(() =>
+  related.value.slice(relatedStart.value, relatedStart.value + relatedPageSize.value),
+)
+const relatedCanPrev = computed(() => relatedStart.value > 0)
+const relatedCanNext = computed(
+  () => relatedStart.value + relatedPageSize.value < related.value.length,
+)
+
+function relatedPrev() {
+  relatedStart.value = Math.max(0, relatedStart.value - relatedPageSize.value)
+}
+
+function relatedNext() {
+  const maxStart = Math.max(0, related.value.length - relatedPageSize.value)
+  relatedStart.value = Math.min(maxStart, relatedStart.value + relatedPageSize.value)
 }
 
 function goDeepAnalysis() {
@@ -216,8 +243,22 @@ watch(
 )
 
 onMounted(() => {
+  updateRelatedPageSize()
+  window.addEventListener('resize', updateRelatedPageSize)
   loadDetail()
 })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateRelatedPageSize)
+})
+
+watch(
+  () => [related.value.length, relatedPageSize.value],
+  () => {
+    const maxStart = Math.max(0, related.value.length - relatedPageSize.value)
+    if (relatedStart.value > maxStart) relatedStart.value = maxStart
+  },
+)
 </script>
 
 <template>
@@ -260,95 +301,151 @@ onMounted(() => {
           </div>
         </div>
 
-        <article class="nd-hero card">
-          <div class="nd-meta">
-            <span v-if="detail.source" class="nd-pill">{{ detail.source }}</span>
-            <span class="nd-time">{{ formatTime(detail.publishedAt) }}</span>
-            <span class="nd-pill nd-pill--soft">{{ detail.lang || detail.language || '—' }}</span>
-            <span v-if="detail.chinaRelated === true" class="nd-pill nd-pill--cn">涉华</span>
-            <span v-else-if="detail.chinaRelated === false" class="nd-pill nd-pill--soft">非涉华</span>
-          </div>
-          <h2 class="nd-title">{{ detail.title || '—' }}</h2>
-          <p v-if="detail.titleCN" class="nd-title-sub">{{ detail.titleCN }}</p>
-          <div class="nd-analysis-wrap">
-            <span class="nd-eyebrow nd-eyebrow--hero">总结（summary）</span>
-            <p class="nd-summary">{{ detail.summary != null && String(detail.summary).trim() ? String(detail.summary).trim() : '—' }}</p>
-          </div>
-          <a v-if="detail.url" :href="detail.url" class="nd-link" target="_blank" rel="noopener noreferrer">
-            原文链接 ↗
-          </a>
-        </article>
-
-        <section v-if="detail.latestAnalysis" class="nd-card card nd-wf-fields">
-          <header class="nd-sec-head">
-            <h3>工作流核心字段</h3>
-            <span class="nd-sec-sub">与百炼单篇 JSON 一一对应（无分析记录时不展示本块）</span>
-          </header>
-          <dl class="nd-wf-dl">
-            <div class="nd-wf-dl-row">
-              <dt>总结（summary）</dt>
-              <dd>{{ detail.summary != null && String(detail.summary).trim() ? String(detail.summary).trim() : '—' }}</dd>
-            </div>
-            <div class="nd-wf-dl-row">
-              <dt>是否涉华（chinaRelated）</dt>
-              <dd>{{ fmtChinaRelated(detail.chinaRelated) }}</dd>
-            </div>
-            <div class="nd-wf-dl-row">
-              <dt>虚假评分（fakeScore）</dt>
-              <dd>{{ detail.fakeScore != null && !Number.isNaN(Number(detail.fakeScore)) ? detail.fakeScore : '—' }}</dd>
-            </div>
-            <div class="nd-wf-dl-row">
-              <dt>风险等级（riskLevel）</dt>
-              <dd>{{ detail.riskLevel || '—' }}</dd>
-            </div>
-            <div class="nd-wf-dl-row">
-              <dt>风险原因（riskReason）</dt>
-              <dd class="nd-wf-dl-dd--pre">
-                {{
-                  detail.riskReason?.trim() ||
-                    (Array.isArray(detail.reasons) && detail.reasons.length ? detail.reasons.join('；') : '') ||
-                    '—'
-                }}
-              </dd>
-            </div>
-          </dl>
-        </section>
-
-        <section class="nd-card card">
-          <header class="nd-sec-head">
-            <h3>可信度与其它分析</h3>
-            <span class="nd-sec-sub">可信指数为接口推导；事实要点来自工作流 facts</span>
-          </header>
-          <div class="nd-cred-grid nd-cred-grid--single">
-            <div class="nd-cred-block">
-              <span class="nd-cred-label">可信指数（credibilityScore）</span>
-              <div class="nd-cred-num-row">
-                <strong class="nd-cred-num">{{ detail.credibilityScore != null ? detail.credibilityScore : '—' }}</strong>
-                <span class="nd-cred-scale">/ 100</span>
+        <div class="nd-split">
+          <section class="nd-left">
+            <article class="nd-hero card">
+              <div class="nd-meta">
+                <span v-if="detail.source" class="nd-pill">{{ detail.source }}</span>
+                <span class="nd-time">{{ formatTime(detail.publishedAt) }}</span>
+                <span class="nd-pill nd-pill--soft">{{ detail.lang || detail.language || '—' }}</span>
+                <span v-if="detail.chinaRelated === true" class="nd-pill nd-pill--cn">涉华</span>
+                <span v-else-if="detail.chinaRelated === false" class="nd-pill nd-pill--soft">非涉华</span>
               </div>
-              <div v-if="credibilityPct != null" class="nd-bar">
-                <i class="nd-bar-fill nd-bar-fill--cred" :style="{ width: credibilityPct + '%' }" />
-              </div>
-            </div>
-          </div>
-          <div v-if="detail.verdict != null && String(detail.verdict).trim()" class="nd-verdict">
-            <span class="nd-verdict-label">综合判断（verdict）</span>
-            <span class="nd-verdict-val">{{ String(detail.verdict).trim() }}</span>
-          </div>
-          <template v-if="detail.facts?.length">
-            <span class="nd-eyebrow nd-eyebrow--facts">事实要点（facts）</span>
-            <ul class="nd-facts">
-              <li v-for="(f, i) in detail.facts" :key="i">
-                <template v-if="typeof f === 'object' && f">
-                  {{ [f.time, f.subject, f.event].filter(Boolean).join(' · ') }}
-                </template>
-                <template v-else>{{ f }}</template>
-              </li>
-            </ul>
-          </template>
-        </section>
+              <h2 class="nd-title">{{ detail.title || '—' }}</h2>
+              <p v-if="detail.titleCN" class="nd-title-sub">{{ detail.titleCN }}</p>
+              <a v-if="detail.url" :href="detail.url" class="nd-link" target="_blank" rel="noopener noreferrer">
+                原文链接 ↗
+              </a>
+            </article>
 
-        <section v-if="detail.latestAnalysis" class="nd-card card">
+            <section class="nd-card card nd-body-card">
+              <header class="nd-sec-head nd-sec-head--row">
+                <div>
+                  <h3>原文内容</h3>
+                  <span class="nd-sec-sub">正文与采集信息</span>
+                </div>
+                <div class="nd-font-tools">
+                  <button type="button" class="nd-font-btn" :disabled="fontStep <= 0" @click="bumpFont(-1)">A−</button>
+                  <button type="button" class="nd-font-btn" :disabled="fontStep >= 2" @click="bumpFont(1)">A+</button>
+                  <button
+                    type="button"
+                    class="nd-copy-btn"
+                    @click="copyPlain([detail.content, detail.contentCN].filter((x) => x && String(x).trim()).join('\n\n'))"
+                  >
+                    复制全文
+                  </button>
+                </div>
+              </header>
+              <div class="nd-body-cols nd-body-cols--single">
+                <div class="nd-body-col">
+                  <span class="nd-body-label">原文 / 采集正文</span>
+                  <div class="nd-prose nd-prose--orig" :style="{ fontSize: bodyFontPx + 'px' }">
+                    {{ detail.content?.trim() || '—' }}
+                  </div>
+                </div>
+                <div class="nd-body-col nd-body-col--img">
+                  <span class="nd-body-label">原文插图（预留位置）</span>
+                  <div class="nd-image-slot">
+                    <span>预留插图区域（后端接入后显示原文图片）</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </section>
+
+          <section class="nd-right">
+            <section class="nd-card card">
+              <header class="nd-sec-head">
+                <h3>加工结果摘要</h3>
+                <span class="nd-sec-sub">由模型加工后的可信度、结论与风险信息</span>
+              </header>
+              <div class="nd-analysis-wrap nd-analysis-wrap--panel">
+                <span class="nd-eyebrow nd-eyebrow--hero">总结（summary）</span>
+                <p class="nd-summary">{{ detail.summary != null && String(detail.summary).trim() ? String(detail.summary).trim() : '—' }}</p>
+              </div>
+              <div v-if="detail.verdict != null && String(detail.verdict).trim()" class="nd-verdict">
+                <span class="nd-verdict-label">综合判断（verdict）</span>
+                <span class="nd-verdict-val">{{ String(detail.verdict).trim() }}</span>
+              </div>
+            </section>
+
+            <section class="nd-card card">
+              <header class="nd-sec-head">
+                <h3>可信度与其它分析</h3>
+                <span class="nd-sec-sub">可信指数为接口推导；事实要点来自工作流 facts</span>
+              </header>
+              <div class="nd-cred-grid nd-cred-grid--single">
+                <div class="nd-cred-block">
+                  <span class="nd-cred-label">可信指数（credibilityScore）</span>
+                  <div class="nd-cred-num-row">
+                    <strong class="nd-cred-num">{{ detail.credibilityScore != null ? detail.credibilityScore : '—' }}</strong>
+                    <span class="nd-cred-scale">/ 100</span>
+                  </div>
+                  <div v-if="credibilityPct != null" class="nd-bar">
+                    <i class="nd-bar-fill nd-bar-fill--cred" :style="{ width: credibilityPct + '%' }" />
+                  </div>
+                </div>
+              </div>
+              <template v-if="detail.facts?.length">
+                <span class="nd-eyebrow nd-eyebrow--facts">事实要点（facts）</span>
+                <ul class="nd-facts">
+                  <li v-for="(f, i) in detail.facts" :key="i">
+                    <template v-if="typeof f === 'object' && f">
+                      {{ [f.time, f.subject, f.event].filter(Boolean).join(' · ') }}
+                    </template>
+                    <template v-else>{{ f }}</template>
+                  </li>
+                </ul>
+              </template>
+            </section>
+
+            <section v-if="detail.latestAnalysis" class="nd-card card nd-wf-fields">
+              <header class="nd-sec-head">
+                <h3>工作流核心字段</h3>
+                <span class="nd-sec-sub">与百炼单篇 JSON 一一对应（无分析记录时不展示本块）</span>
+              </header>
+              <dl class="nd-wf-dl">
+                <div class="nd-wf-dl-row">
+                  <dt>总结（summary）</dt>
+                  <dd>{{ detail.summary != null && String(detail.summary).trim() ? String(detail.summary).trim() : '—' }}</dd>
+                </div>
+                <div class="nd-wf-dl-row">
+                  <dt>是否涉华（chinaRelated）</dt>
+                  <dd>{{ fmtChinaRelated(detail.chinaRelated) }}</dd>
+                </div>
+                <div class="nd-wf-dl-row">
+                  <dt>虚假评分（fakeScore）</dt>
+                  <dd>{{ detail.fakeScore != null && !Number.isNaN(Number(detail.fakeScore)) ? detail.fakeScore : '—' }}</dd>
+                </div>
+                <div class="nd-wf-dl-row">
+                  <dt>风险等级（riskLevel）</dt>
+                  <dd>{{ detail.riskLevel || '—' }}</dd>
+                </div>
+                <div class="nd-wf-dl-row">
+                  <dt>风险原因（riskReason）</dt>
+                  <dd class="nd-wf-dl-dd--pre">
+                    {{
+                      detail.riskReason?.trim() ||
+                        (Array.isArray(detail.reasons) && detail.reasons.length ? detail.reasons.join('；') : '') ||
+                        '—'
+                    }}
+                  </dd>
+                </div>
+              </dl>
+            </section>
+
+            <section v-if="!detail.latestAnalysis" class="nd-card card">
+              <p class="nd-muted">暂无单篇工作流分析记录。</p>
+            </section>
+
+            <div class="nd-cta-wrap">
+              <button type="button" class="nd-cta" @click="goDeepAnalysis">进入深度分析</button>
+              <p class="nd-cta-hint">将携带新闻 ID 跳转至单篇分析工作台，复用现有分析能力</p>
+            </div>
+          </section>
+        </div>
+
+        <section v-if="detail.latestAnalysis" class="nd-card card nd-ms-middle">
           <header class="nd-sec-head">
             <h3>多源核验（multiSourceCheck）</h3>
             <span class="nd-sec-sub">字段全部来自接口，空项显示为「—」；相关报道仅数组内容</span>
@@ -387,63 +484,39 @@ onMounted(() => {
             </div>
           </div>
         </section>
-        <section v-if="!detail.latestAnalysis" class="nd-card card">
-          <p class="nd-muted">暂无单篇工作流分析记录。</p>
-        </section>
 
-        <section class="nd-card card nd-body-card">
-          <header class="nd-sec-head nd-sec-head--row">
-            <div>
-              <h3>正文</h3>
-              <span class="nd-sec-sub">原文标题对应正文与中文摘要（contentCN）</span>
-            </div>
-            <div class="nd-font-tools">
-              <button type="button" class="nd-font-btn" :disabled="fontStep <= 0" @click="bumpFont(-1)">A−</button>
-              <button type="button" class="nd-font-btn" :disabled="fontStep >= 2" @click="bumpFont(1)">A+</button>
-              <button
-                type="button"
-                class="nd-copy-btn"
-                @click="copyPlain([detail.content, detail.contentCN].filter((x) => x && String(x).trim()).join('\n\n'))"
-              >
-                复制全文
-              </button>
-            </div>
-          </header>
-          <div class="nd-body-cols">
-            <div class="nd-body-col">
-              <span class="nd-body-label">原文 / 采集正文</span>
-              <div class="nd-prose nd-prose--orig" :style="{ fontSize: bodyFontPx + 'px' }">
-                {{ detail.content?.trim() || '—' }}
-              </div>
-            </div>
-            <div class="nd-body-col nd-body-col--cn">
-              <span class="nd-body-label">中文摘要（contentCN）</span>
-              <div class="nd-prose nd-prose--cn" :style="{ fontSize: bodyFontPx + 'px' }">
-                {{ detail.contentCN != null && String(detail.contentCN).trim() ? String(detail.contentCN).trim() : '—' }}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <div class="nd-cta-wrap">
-          <button type="button" class="nd-cta" @click="goDeepAnalysis">进入深度分析</button>
-          <p class="nd-cta-hint">将携带新闻 ID 跳转至单篇分析工作台，复用现有分析能力</p>
-        </div>
-
-        <section v-if="related.length" class="nd-card card nd-related">
+        <section v-if="related.length" class="nd-card card nd-related nd-related-bottom">
           <header class="nd-sec-head">
             <h3>相关推荐</h3>
-            <span class="nd-sec-sub">同源或列表邻近条目</span>
+            <span class="nd-sec-sub">同源或列表邻近条目（左右翻页）</span>
           </header>
-          <ul class="nd-rel-list">
-            <li v-for="item in related" :key="item.id">
-              <button type="button" class="nd-rel-btn" @click="goRelated(item)">
-                <span class="nd-rel-risk" :class="'r--' + riskBand(item.risk)">{{ item.risk || '—' }}</span>
-                <span class="nd-rel-title">{{ item.title }}</span>
-                <span class="nd-rel-src">{{ item.source }}</span>
+          <div class="nd-rel-carousel">
+            <button type="button" class="nd-rel-nav" :disabled="!relatedCanPrev" @click="relatedPrev">‹</button>
+            <TransitionGroup name="nd-rel-slide" tag="div" class="nd-rel-track">
+              <button
+                v-for="item in relatedVisible"
+                :key="`${item.id}-${relatedStart}`"
+                type="button"
+                class="nd-rel-card"
+                @click="goRelated(item)"
+              >
+                <div class="nd-rel-thumb-wrap">
+                  <img
+                    class="nd-rel-thumb"
+                    :src="item.thumbnailUrl || `https://picsum.photos/seed/rel${item.id}/320/220`"
+                    alt=""
+                    loading="lazy"
+                  />
+                  <span class="nd-rel-risk" :class="'r--' + riskBand(item.risk)">{{ item.risk || '—' }}</span>
+                </div>
+                <div class="nd-rel-card-body">
+                  <span class="nd-rel-title">{{ item.title }}</span>
+                  <span class="nd-rel-src">{{ item.source || '未知来源' }}</span>
+                </div>
               </button>
-            </li>
-          </ul>
+            </TransitionGroup>
+            <button type="button" class="nd-rel-nav" :disabled="!relatedCanNext" @click="relatedNext">›</button>
+          </div>
         </section>
       </template>
     </div>
@@ -453,17 +526,37 @@ onMounted(() => {
 <style scoped>
 .nd {
   min-height: 100vh;
+  min-height: 100dvh;
   background:
-    radial-gradient(ellipse 80% 50% at 10% -10%, rgba(37, 99, 235, 0.07), transparent),
-    radial-gradient(ellipse 60% 40% at 100% 10%, rgba(96, 165, 250, 0.06), transparent),
-    var(--bg, #eef2f8);
-  padding: 0 16px 48px;
-  max-width: 900px;
-  margin: 0 auto;
+    radial-gradient(ellipse 80% 50% at 10% -10%, rgba(185, 28, 28, 0.08), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 10%, rgba(248, 113, 113, 0.06), transparent),
+    var(--bg, #f4f4f3);
+  padding: 0 clamp(10px, 2.2vw, 28px) 48px;
+  max-width: none;
+  width: 100%;
+  margin: 0;
 }
 
 .nd-inner {
   padding-top: 4px;
+}
+
+.nd-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.nd-left,
+.nd-right {
+  min-width: 0;
+}
+
+@media (max-width: 1100px) {
+  .nd-split {
+    grid-template-columns: 1fr;
+  }
 }
 
 .nd-error {
@@ -481,7 +574,7 @@ onMounted(() => {
   font-weight: 600;
   font-family: inherit;
   color: #fff;
-  background: #2563eb;
+  background: #b91c1c;
   border: none;
   border-radius: 10px;
   cursor: pointer;
@@ -500,12 +593,17 @@ onMounted(() => {
 }
 
 .nd-sticky-inner {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px 14px;
   padding: 10px 14px;
+}
+
+@media (max-width: 900px) {
+  .nd-sticky-inner {
+    grid-template-columns: 1fr;
+  }
 }
 
 .nd-sticky-score {
@@ -529,7 +627,7 @@ onMounted(() => {
 .nd-sticky-score strong {
   font-size: 20px;
   font-weight: 700;
-  color: #1d4ed8;
+  color: #b91c1c;
   font-variant-numeric: tabular-nums;
 }
 
@@ -546,7 +644,7 @@ onMounted(() => {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  background: linear-gradient(90deg, #b91c1c, #f87171);
 }
 
 .nd-sticky-hint {
@@ -605,8 +703,8 @@ onMounted(() => {
   font-weight: 600;
   padding: 4px 10px;
   border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: #fef2f2;
+  color: #7f1d1d;
 }
 
 .nd-pill--soft {
@@ -645,6 +743,10 @@ onMounted(() => {
   margin: 0 0 14px;
 }
 
+.nd-analysis-wrap--panel {
+  margin: 4px 0 0;
+}
+
 .nd-eyebrow--hero {
   display: block;
   margin-bottom: 6px;
@@ -660,7 +762,7 @@ onMounted(() => {
 .nd-link {
   font-size: 14px;
   font-weight: 600;
-  color: #2563eb;
+  color: #b91c1c;
   text-decoration: none;
 }
 
@@ -1044,15 +1146,19 @@ onMounted(() => {
 }
 
 .nd-copy-btn {
-  border-color: #bfdbfe;
-  color: #1d4ed8;
-  background: #eff6ff;
+  border-color: #fecaca;
+  color: #7f1d1d;
+  background: #fef2f2;
 }
 
 .nd-body-cols {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 18px;
+}
+
+.nd-body-cols--single {
+  grid-template-columns: 1fr;
 }
 
 @media (max-width: 820px) {
@@ -1063,6 +1169,24 @@ onMounted(() => {
 
 .nd-body-col {
   min-width: 0;
+}
+
+.nd-body-col--img {
+  margin-top: 2px;
+}
+
+.nd-image-slot {
+  border: 1px dashed #d6d3d1;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff, #fafaf9);
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  text-align: center;
+  color: #78716c;
+  font-size: 14px;
 }
 
 .nd-body-label {
@@ -1099,7 +1223,7 @@ onMounted(() => {
 
 .nd-cta-wrap {
   text-align: center;
-  margin: 8px 0 28px;
+  margin: 6px 0 12px;
 }
 
 .nd-cta {
@@ -1111,8 +1235,8 @@ onMounted(() => {
   border: none;
   border-radius: 999px;
   cursor: pointer;
-  background: linear-gradient(135deg, #2563eb, #60a5fa);
-  box-shadow: 0 10px 28px rgba(37, 99, 235, 0.35);
+  background: linear-gradient(135deg, #b91c1c, #f87171);
+  box-shadow: 0 10px 28px rgba(185, 28, 28, 0.28);
   transition:
     transform 0.18s ease,
     box-shadow 0.2s ease,
@@ -1121,7 +1245,7 @@ onMounted(() => {
 
 .nd-cta:hover {
   filter: brightness(1.05);
-  box-shadow: 0 14px 32px rgba(37, 99, 235, 0.4);
+  box-shadow: 0 14px 32px rgba(185, 28, 28, 0.34);
   transform: translateY(-2px);
 }
 
@@ -1144,6 +1268,98 @@ onMounted(() => {
   gap: 8px;
 }
 
+.nd-related-bottom {
+  margin-top: 14px;
+}
+
+.nd-ms-middle {
+  margin-top: 14px;
+}
+
+.nd-rel-carousel {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.nd-rel-nav {
+  width: 40px;
+  border: 1px solid #e7e5e4;
+  border-radius: 10px;
+  background: #fff;
+  color: #44403c;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.nd-rel-nav:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.nd-rel-track {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.nd-rel-card {
+  border: 1px solid #e7e5e4;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+}
+
+.nd-rel-card:hover {
+  transform: translateY(-2px);
+  border-color: #fca5a5;
+  box-shadow: 0 8px 20px rgba(185, 28, 28, 0.12);
+}
+
+.nd-rel-thumb-wrap {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  background: #e7e5e4;
+}
+
+.nd-rel-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.nd-rel-card-body {
+  padding: 10px 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.nd-rel-slide-enter-active,
+.nd-rel-slide-leave-active {
+  transition: transform 0.28s ease, opacity 0.28s ease;
+}
+
+.nd-rel-slide-enter-from {
+  opacity: 0;
+  transform: translateX(24px);
+}
+
+.nd-rel-slide-leave-to {
+  opacity: 0;
+  transform: translateX(-24px);
+}
+
 .nd-rel-btn {
   width: 100%;
   display: grid;
@@ -1164,8 +1380,8 @@ onMounted(() => {
 }
 
 .nd-rel-btn:hover {
-  border-color: #93c5fd;
-  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.12);
+  border-color: #fca5a5;
+  box-shadow: 0 6px 18px rgba(185, 28, 28, 0.1);
   transform: translateY(-1px);
 }
 
@@ -1204,5 +1420,17 @@ onMounted(() => {
   font-size: 12px;
   color: #64748b;
   white-space: nowrap;
+}
+
+@media (max-width: 1180px) {
+  .nd-rel-track {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .nd-rel-track {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

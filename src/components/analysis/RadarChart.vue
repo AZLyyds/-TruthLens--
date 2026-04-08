@@ -18,6 +18,8 @@ const render = () => {
     d.emotionManipulation ?? 0,
     d.propagationMisleading ?? 0,
   ]
+  const benchmark = [65, 65, 65, 65]
+  const avg = Math.round(values.reduce((a, b) => a + b, 0) / 4)
   chart.setOption({
     animationDuration: 900,
     animationEasing: 'cubicOut',
@@ -26,7 +28,7 @@ const render = () => {
       confine: true,
       backgroundColor: 'rgba(15, 23, 42, 0.9)',
       borderColor: 'rgba(148, 163, 184, 0.35)',
-      textStyle: { color: '#f1f5f9', fontSize: 12 },
+      textStyle: { color: '#1c1917', fontSize: 12 },
       formatter: (params: { value?: number[]; data?: { value?: number[] } }) => {
         const v = params?.value ?? params?.data?.value
         if (!Array.isArray(v)) return ''
@@ -36,19 +38,23 @@ const render = () => {
     legend: {
       orient: 'horizontal',
       bottom: 0,
-      data: ['风险维度'],
-      textStyle: { color: '#475569', fontSize: 12 },
+      data: ['当前评估', '参考基线'],
+      textStyle: { color: '#57534e', fontSize: 12, fontWeight: 600 },
     },
     radar: {
       center: ['50%', '46%'],
       radius: '58%',
-      splitNumber: 4,
-      axisName: { color: '#475569', fontSize: 12, fontWeight: 500 },
-      splitLine: { lineStyle: { color: '#cbd5e1' } },
-      splitArea: {
-        areaStyle: { color: ['rgba(239,246,255,0.95)', 'rgba(219,234,254,0.55)', 'rgba(191,219,254,0.4)', 'rgba(147,197,253,0.25)'] },
+      splitNumber: 5,
+      axisName: {
+        color: '#57534e',
+        fontSize: 12,
+        fontWeight: 600,
       },
-      axisLine: { lineStyle: { color: '#cbd5e1' } },
+      splitLine: { lineStyle: { color: '#e7e5e4' } },
+      splitArea: {
+        areaStyle: { color: ['rgba(255,255,255,0.96)', 'rgba(254,242,242,0.9)', 'rgba(254,226,226,0.72)', 'rgba(252,165,165,0.38)', 'rgba(248,113,113,0.2)'] },
+      },
+      axisLine: { lineStyle: { color: '#e7e5e4' } },
       indicator: [
         { name: '来源可信度', max: 100 },
         { name: '事实一致性', max: 100 },
@@ -63,12 +69,41 @@ const render = () => {
         data: [
           {
             value: values,
-            name: '风险维度',
-            areaStyle: { color: 'rgba(0, 113, 227, 0.18)' },
-            lineStyle: { color: '#0071e3', width: 2.5 },
-            itemStyle: { color: '#0071e3', borderWidth: 2, borderColor: '#fff' },
+            name: '当前评估',
+            areaStyle: { color: 'rgba(185, 28, 28, 0.16)' },
+            lineStyle: { color: '#b91c1c', width: 2.8 },
+            itemStyle: { color: '#b91c1c', borderWidth: 2, borderColor: '#fff' },
+            symbol: 'circle',
+            symbolSize: 6,
+          },
+          {
+            value: benchmark,
+            name: '参考基线',
+            areaStyle: { color: 'transparent' },
+            lineStyle: { color: '#78716c', width: 1.4, type: 'dashed' },
+            itemStyle: { color: '#78716c' },
+            symbol: 'none',
           },
         ],
+      },
+      {
+        type: 'scatter',
+        coordinateSystem: 'radar',
+        data: [[avg, avg, avg, avg]],
+        symbolSize: 0,
+        label: {
+          show: true,
+          formatter: `综合均值 ${avg}`,
+          color: '#7f1d1d',
+          fontSize: 12,
+          fontWeight: 700,
+          backgroundColor: 'rgba(254,242,242,0.9)',
+          borderColor: 'rgba(185,28,28,0.35)',
+          borderWidth: 1,
+          borderRadius: 8,
+          padding: [4, 8],
+          offset: [0, -82],
+        },
       },
     ],
   })

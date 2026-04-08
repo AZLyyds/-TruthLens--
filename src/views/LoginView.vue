@@ -35,7 +35,7 @@ const login = async () => {
       localStorage.setItem('truthlens_refresh_token', result.refreshToken)
     }
     localStorage.setItem('truthlens_username', form.value.username)
-    router.push('/portal')
+    router.push('/portal-screen')
   } catch (error) {
     errorMessage.value = error?.message || '登录失败，请稍后重试'
   } finally {

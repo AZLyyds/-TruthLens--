@@ -81,7 +81,7 @@ const sourceLine = computed(() => [props.result?.meta?.sourceName, props.analyze
 
         <section class="an-sheet an-sheet--flush">
           <p class="an-eyebrow">证据路径</p>
-          <EvidencePath :steps="steps" />
+          <EvidencePath :steps="steps" :credibility-score="result.credibilityScore" />
         </section>
 
         <section class="an-sheet an-sheet--last">
@@ -151,7 +151,7 @@ const sourceLine = computed(() => [props.result?.meta?.sourceName, props.analyze
   font-family: inherit;
   letter-spacing: -0.01em;
   color: #fff;
-  background: #0071e3;
+  background: #b91c1c;
   border: none;
   border-radius: 980px;
   cursor: pointer;

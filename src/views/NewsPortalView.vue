@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { fetchDashboardOverview, fetchDashboardTrends } from '../api/dashboard'
 import { fetchNewsDetail, fetchNewsList } from '../api/news'
 import { runNewsWorkflow } from '../api/workflow'
+import CdsWordCloud from '../components/wordcloud/CdsWordCloud.vue'
 
 const router = useRouter()
 const isLoading = ref(false)
@@ -266,6 +267,7 @@ async function triggerWorkflow() {
     if (w && typeof w === 'object') {
       const bits = []
       if (w.newsCount != null) bits.push(`抓取 ${w.newsCount} 条`)
+      if (w.duplicateRemovedCount != null) bits.push(`去重后 ${w.duplicateRemovedCount} 条`)
       if (w.overallRiskLevel) bits.push(`整体 ${String(w.overallRiskLevel)}`)
       if (bits.length) msg += `（${bits.join('，')}）`
       if (w.overallConclusion) {
@@ -295,18 +297,6 @@ onMounted(async () => {
 
 <template>
   <div class="page page-portal portal-pro">
-    <header class="top-nav card">
-      <div class="title">TruthLens · 新闻门户</div>
-      <nav>
-        <span class="dot active" @click="router.push('/portal')">总览</span>
-        <span class="dot" @click="router.push('/dashboard')">监控大屏</span>
-        <span class="dot" @click="router.push('/analysis')">单篇分析</span>
-        <span class="dot" @click="router.push('/multi-analysis')">多篇分析</span>
-        <span class="dot" @click="router.push('/profile')">个人中心</span>
-        <span class="avatar">JW</span>
-      </nav>
-    </header>
-
     <main class="portal-main">
         <section class="overview-grid anim-up delay-1">
           <article class="overview-card metrics-card card">
@@ -332,8 +322,8 @@ onMounted(async () => {
               <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="风险趋势图">
                 <defs>
                   <linearGradient id="trendLine" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stop-color="#2563eb" />
-                    <stop offset="100%" stop-color="#60a5fa" />
+                    <stop offset="0%" stop-color="#b91c1c" />
+                    <stop offset="100%" stop-color="#f87171" />
                   </linearGradient>
                 </defs>
                 <path class="grid-line" d="M 0 20 L 100 20 M 0 40 L 100 40 M 0 60 L 100 60 M 0 80 L 100 80" />
@@ -361,16 +351,11 @@ onMounted(async () => {
           <article class="overview-card cloud-card card">
             <header class="section-head"><h3>热点关键词云</h3><span>{{ keywordCloud.length }} 个热点词</span></header>
             <div class="keyword-cloud">
-              <button
-                v-for="word in keywordCloud"
-                :key="word.name"
-                type="button"
-                :class="['chip', { active: selectedKeyword === word.name }]"
-                :style="{ fontSize: `${word.size}px` }"
-                @click="applyKeywordChip(word.name)"
-              >
-                {{ word.name }}
-              </button>
+              <CdsWordCloud
+                :words="keywordCloud.map((w) => ({ text: w.name, size: w.size }))"
+                :selected="selectedKeyword"
+                @select="applyKeywordChip"
+              />
             </div>
           </article>
 
@@ -464,11 +449,12 @@ onMounted(async () => {
 <style scoped>
 .portal-pro {
   max-width: 1460px;
-  height: 100dvh;
+  height: auto;
+  min-height: 100vh;
   min-height: 100dvh;
   padding: 10px 14px 8px;
   gap: 10px;
-  overflow: hidden;
+  overflow: visible;
   display: flex;
   flex-direction: column;
 }
@@ -479,15 +465,15 @@ onMounted(async () => {
   flex: 1;
   min-height: 0;
   gap: 10px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .overview-grid {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  min-height: 232px;
-  max-height: 232px;
+  min-height: 0;
+  max-height: none;
   flex-shrink: 0;
 }
 
@@ -510,7 +496,7 @@ onMounted(async () => {
 }
 
 .section-head span {
-  color: #7c8da7;
+  color: #6b7280;
   font-size: 12px;
 }
 
@@ -522,10 +508,10 @@ onMounted(async () => {
 }
 
 .metric-item {
-  border: 1px solid #e1eaf8;
+  border: 1px solid #e7e5e4;
   border-radius: 12px;
   padding: 10px;
-  background: linear-gradient(180deg, #fff, #f9fbff);
+  background: linear-gradient(180deg, #fff, #fafaf9);
 }
 
 .metric-top {
@@ -533,7 +519,7 @@ onMounted(async () => {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: #607494;
+  color: #6b7280;
 }
 
 .metric-title {
@@ -544,7 +530,7 @@ onMounted(async () => {
   margin-top: 4px;
   font-size: 22px;
   font-weight: 700;
-  color: #162b4d;
+  color: #1c1917;
 }
 
 .metric-delta {
@@ -569,16 +555,16 @@ onMounted(async () => {
 
 .sparkline span {
   width: 5px;
-  background: linear-gradient(180deg, #3b82f6, #93c5fd);
+  background: linear-gradient(180deg, #b91c1c, #fca5a5);
   border-radius: 8px;
 }
 
 .trend-chart {
   position: relative;
   height: calc(100% - 52px);
-  border: 1px solid #e3ebf9;
+  border: 1px solid #e7e5e4;
   border-radius: 14px;
-  background: linear-gradient(180deg, #fcfdff, #f6f9ff);
+  background: linear-gradient(180deg, #ffffff, #fafaf9);
 }
 
 .trend-chart svg {
@@ -587,19 +573,19 @@ onMounted(async () => {
 }
 
 .grid-line {
-  stroke: #dce8fc;
+  stroke: #e7e5e4;
   stroke-width: 0.4;
 }
 
 .trend-dot {
-  fill: #2563eb;
+  fill: #b91c1c;
   transition: r 0.2s ease;
   cursor: pointer;
 }
 
 .trend-dot.active {
   r: 2.6;
-  fill: #1d4ed8;
+  fill: #90080e;
 }
 
 .chart-axis {
@@ -607,7 +593,7 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 8px;
   margin-top: 4px;
-  color: #7c8da7;
+  color: #6b7280;
   font-size: 11px;
 }
 
@@ -616,27 +602,23 @@ onMounted(async () => {
   top: 8px;
   right: 8px;
   font-size: 12px;
-  color: #1d4ed8;
-  background: #eaf1ff;
+  color: #7f1d1d;
+  background: #fef2f2;
   border-radius: 999px;
   padding: 4px 10px;
 }
 
 .keyword-cloud {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-  align-content: flex-start;
-  justify-content: flex-start;
-  height: calc(100% - 26px);
+  height: 160px;
   overflow: hidden;
+  position: relative;
 }
 
 .chip {
-  border: 1px solid #d8e5fb;
+  border: 1px solid #e7e5e4;
   border-radius: 999px;
-  background: linear-gradient(120deg, #f8fbff, #edf4ff);
-  color: #30537f;
+  background: linear-gradient(120deg, #ffffff, #fafaf9);
+  color: #292524;
   padding: 5px 11px;
   line-height: 1;
 }
@@ -646,7 +628,7 @@ onMounted(async () => {
 }
 
 .chip.active {
-  background: linear-gradient(120deg, #2563eb, #60a5fa);
+  background: linear-gradient(120deg, #b91c1c, #f87171);
   color: #fff;
   border-color: transparent;
 }
@@ -667,7 +649,7 @@ onMounted(async () => {
 
 .workflow-status {
   margin: 10px 2px 0;
-  color: #486489;
+  color: #6b7280;
   font-size: 12px;
 }
 
@@ -702,8 +684,8 @@ onMounted(async () => {
 
 .feed-count {
   font-size: 13px;
-  color: #5c7396;
-  background: #edf4ff;
+  color: #6b7280;
+  background: #fef2f2;
   border-radius: 999px;
   padding: 6px 11px;
 }
@@ -716,8 +698,8 @@ onMounted(async () => {
 
 .filter-bar select,
 .filter-bar input {
-  border: 1px solid #d7e4f8;
-  background: #f9fbff;
+  border: 1px solid #e7e5e4;
+  background: #fafaf9;
   height: 38px;
 }
 
@@ -729,19 +711,19 @@ onMounted(async () => {
 }
 
 .news-tile {
-  border: 1px solid #e2eafb;
+  border: 1px solid #e7e5e4;
   border-radius: 14px;
   min-height: 108px;
   padding: 9px;
-  background: linear-gradient(160deg, #fff, #f9fbff);
+  background: linear-gradient(160deg, #fff, #fafaf9);
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
   cursor: pointer;
 }
 
 .news-tile:hover {
   transform: translateY(-3px);
-  border-color: #b8d0f6;
-  box-shadow: 0 12px 26px rgba(27, 84, 180, 0.12);
+  border-color: #fca5a5;
+  box-shadow: 0 12px 26px rgba(185, 28, 28, 0.1);
 }
 
 .news-tile header {
@@ -759,8 +741,8 @@ onMounted(async () => {
 }
 
 .risk-tag.low {
-  color: #0f766e;
-  background: #ccfbf1;
+  color: #15803d;
+  background: #dcfce7;
 }
 
 .risk-tag.mid {
@@ -775,11 +757,11 @@ onMounted(async () => {
 
 .risk-tag.pending {
   color: #475569;
-  background: #e2e8f0;
+  background: #e7e5e4;
 }
 
 .source {
-  color: #7088ab;
+  color: #6b7280;
   font-size: 12px;
 }
 
@@ -795,14 +777,14 @@ onMounted(async () => {
 
 .time {
   margin: 0;
-  color: #7790b2;
+  color: #6b7280;
   font-size: 12px;
 }
 
 .feed-footer {
   margin-top: 4px;
   text-align: center;
-  color: #7088ab;
+  color: #6b7280;
   font-size: 12px;
 }
 
@@ -813,11 +795,11 @@ onMounted(async () => {
   font-size: 13px;
   font-weight: 700;
   color: #fff;
-  background: linear-gradient(135deg, #2563eb, #60a5fa);
+  background: linear-gradient(135deg, #b91c1c, #f87171);
   border: none;
   border-radius: 999px;
   cursor: pointer;
-  box-shadow: 0 10px 28px rgba(37, 99, 235, 0.22);
+  box-shadow: 0 10px 28px rgba(185, 28, 28, 0.22);
   transition: transform 0.15s ease, filter 0.15s ease;
 }
 
@@ -834,15 +816,15 @@ onMounted(async () => {
 .skeleton {
   height: 140px;
   border-radius: 14px;
-  background: linear-gradient(110deg, #eef4ff 8%, #f9fbff 18%, #eef4ff 33%);
+  background: linear-gradient(110deg, #fef2f2 8%, #fff1f2 18%, #fef2f2 33%);
   background-size: 200% 100%;
   animation: loading 1.3s linear infinite;
 }
 
 .empty-state {
-  border: 1px dashed #c6d8f7;
+  border: 1px dashed #e7e5e4;
   border-radius: 14px;
-  background: #f8fbff;
+  background: #fafaf9;
   padding: 28px;
   text-align: center;
 }
@@ -875,6 +857,7 @@ onMounted(async () => {
   .portal-pro {
     height: auto;
     min-height: 100vh;
+    min-height: 100dvh;
     overflow: auto;
   }
 }

@@ -10,5 +10,8 @@ export async function analyzeSingle(payload) {
 
 export async function analyzeMulti(payload) {
   if (useMock) return mockMultiAnalysis
-  return http.post('/analysis/multi', payload)
+  return http.post('/analysis/multi', payload, {
+    // 多篇分析会触发多次 AI 调用，给更宽松的超时时间
+    timeout: 120000,
+  })
 }

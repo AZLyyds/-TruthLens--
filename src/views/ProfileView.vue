@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchHistory, fetchHistoryDetail, fetchMyProfile, formatHistoryTime } from '../api/profile'
 import AnalysisResultViz from '../components/AnalysisResultViz.vue'
@@ -15,6 +15,37 @@ const errorMessage = ref('')
 const expandedId = ref(null)
 const detailById = ref({})
 const detailLoadingId = ref(null)
+
+const preferenceHistogram = computed(() => {
+  const pref = Array.isArray(profile.value?.preferences) ? profile.value.preferences : []
+  const rows = Array.isArray(history.value) ? history.value : []
+  const bucket = new Map()
+
+  pref.forEach((p, idx) => {
+    const key = String(p || '').trim()
+    if (!key) return
+    bucket.set(key, Math.max(6, 20 - idx * 2))
+  })
+
+  rows.forEach((row) => {
+    const type = String(row?.queryType || '常规分析').trim()
+    bucket.set(type, (bucket.get(type) || 0) + 4)
+    const title = String(row?.newsTitle || row?.inputTitle || '')
+    if (title.includes('涉华')) bucket.set('涉华议题', (bucket.get('涉华议题') || 0) + 3)
+    if (title.includes('风险')) bucket.set('风险追踪', (bucket.get('风险追踪') || 0) + 2)
+  })
+
+  const arr = Array.from(bucket.entries())
+    .map(([label, score]) => ({ label, score }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8)
+
+  const max = arr[0]?.score || 1
+  return arr.map((x) => ({
+    ...x,
+    pct: Math.max(12, Math.round((x.score / max) * 100)),
+  }))
+})
 
 const loadProfileData = async () => {
   errorMessage.value = ''
@@ -82,11 +113,6 @@ onMounted(loadProfileData)
 
 <template>
   <div class="page page-profile">
-    <header class="analysis-header card">
-      <button class="ghost-btn" @click="router.push('/portal')">返回新闻门户</button>
-      <h1>个人中心</h1>
-    </header>
-
     <main class="profile-layout profile-overview card anim-up">
       <div class="profile-top-row">
         <div class="profile-head">
@@ -116,8 +142,16 @@ onMounted(loadProfileData)
       <div class="overview-bottom-row">
         <article class="card-in profile-chip-board">
           <h3>行为偏好画像</h3>
-          <div class="tags">
-            <span v-for="tag in profile.preferences" :key="tag">{{ tag }}</span>
+          <div v-if="preferenceHistogram.length" class="pref-chart" role="img" aria-label="行为偏好权重直方图">
+            <div v-for="item in preferenceHistogram" :key="item.label" class="pref-row">
+              <span class="pref-label">{{ item.label }}</span>
+              <span class="pref-track"><i :style="{ width: `${item.pct}%` }" /></span>
+              <span class="pref-val">{{ item.score }}</span>
+            </div>
+          </div>
+          <div v-else class="pref-empty">暂无可用偏好数据</div>
+          <div class="pref-hint">
+            由偏好标签与历史分析行为加权生成
           </div>
         </article>
         <article class="card-in profile-trend-board">
@@ -203,3 +237,55 @@ onMounted(loadProfileData)
     </section>
   </div>
 </template>
+
+<style scoped>
+.pref-chart {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.pref-row {
+  display: grid;
+  grid-template-columns: 92px 1fr 36px;
+  gap: 8px;
+  align-items: center;
+}
+
+.pref-label {
+  font-size: 12px;
+  color: #44403c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pref-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  overflow: hidden;
+}
+
+.pref-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #fca5a5, #b91c1c);
+}
+
+.pref-val {
+  font-size: 12px;
+  font-weight: 700;
+  color: #7f1d1d;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pref-empty,
+.pref-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #78716c;
+}
+</style>

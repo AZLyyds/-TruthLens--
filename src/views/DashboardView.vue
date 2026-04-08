@@ -8,6 +8,7 @@ import {
   fetchDashboardTrends,
 } from '../api/dashboard'
 import { fetchNewsList } from '../api/news'
+import CdsWordCloud from '../components/wordcloud/CdsWordCloud.vue'
 
 const router = useRouter()
 const isLoading = ref(false)
@@ -185,8 +186,8 @@ const loadDashboard = async () => {
   }
 }
 
-const clickKeyword = (keyword) => {
-  selectedKeyword.value = selectedKeyword.value === keyword.text ? '' : keyword.text
+const clickKeyword = (keywordText) => {
+  selectedKeyword.value = selectedKeyword.value === keywordText ? '' : keywordText
 }
 
 const pickRegion = (point) => {
@@ -388,15 +389,11 @@ onBeforeUnmount(() => {
           <span class="subtext">点击筛选新闻</span>
         </div>
         <div class="keyword-cloud">
-          <button
-            v-for="item in keywordCloud"
-            :key="item.text"
-            :class="['key-item', item.risk, { active: selectedKeyword === item.text }]"
-            :style="{ fontSize: `${12 + item.weight}px` }"
-            @click="clickKeyword(item)"
-          >
-            {{ item.text }}
-          </button>
+          <CdsWordCloud
+            :words="keywordCloud.map((item) => ({ text: item.text, size: 12 + item.weight }))"
+            :selected="selectedKeyword"
+            @select="clickKeyword"
+          />
         </div>
       </section>
 
@@ -435,7 +432,7 @@ onBeforeUnmount(() => {
       <span v-else-if="errorMessage" class="danger">{{ errorMessage }}</span>
       <span v-else>TruthLens 监控大屏 · 实时刷新</span>
       <span class="now-time">{{ nowTime }}</span>
-      <button class="ghost-btn" @click="router.push('/portal')">返回新闻门户</button>
+      <button class="ghost-btn" @click="router.push('/portal-screen')">返回新闻门户</button>
     </footer>
   </div>
 </template>

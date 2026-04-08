@@ -205,6 +205,156 @@ export async function summarize(text) {
   }
 }
 
+export async function generateDetailedSingleReport(payload) {
+  try {
+    const title = String(payload?.title || '').trim()
+    const summary = String(payload?.summary || '').trim()
+    const riskLevel = String(payload?.riskLevel || '').trim()
+    const credibilityScore = Number(payload?.credibilityScore)
+    const reasons = Array.isArray(payload?.reasons) ? payload.reasons.slice(0, 4) : []
+    const suggestions = Array.isArray(payload?.suggestions) ? payload.suggestions.slice(0, 4) : []
+    const facts = Array.isArray(payload?.facts) ? payload.facts.slice(0, 3) : []
+
+    if (!title && !summary) return toFailure('report payload 为空')
+
+    const prompt =
+      `你是“涉华新闻核验分析师”。请基于输入信息写一段具体、实在的中文分析段落。\n` +
+      `要求：\n` +
+      `1) 仅输出一段纯文本，不要标题、不要分点、不要 JSON、不要 markdown。\n` +
+      `2) 目标约 240 字（允许 200-280 字）。\n` +
+      `3) 内容要“有细节”：至少包含 2 个可核验的信息点（来自事实片段/关键原因）。\n` +
+      `4) 必须明确写出“可信度X/100”和风险等级，不要改写该分值。\n` +
+      `5) 禁止空泛表达（如“值得关注”“建议进一步观察”这类套话），禁止编造输入里没有的事实。\n\n` +
+      `输入信息：\n` +
+      `标题：${title || '（无）'}\n` +
+      `摘要：${summary || '（无）'}\n` +
+      `风险等级：${riskLevel || '（无）'}\n` +
+      `可信度：${Number.isNaN(credibilityScore) ? '（无）' : credibilityScore}\n` +
+      `关键原因：${reasons.length ? reasons.join('；') : '（无）'}\n` +
+      `建议动作：${suggestions.length ? suggestions.join('；') : '（无）'}\n` +
+      `事实片段：${facts.length ? facts.map((f) => [f?.time, f?.subject, f?.event].filter(Boolean).join(' / ')).join('；') : '（无）'}`
+
+    const normalizeText = (raw) =>
+      String(raw || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    const effectiveLen = (s) => s.replace(/\s/g, '').length
+
+    // 第一轮：先产出信息充分的草稿
+    const completion1 = await requestCompletion([{ role: 'user', content: prompt }])
+    const draft = completion1.success ? normalizeText(completion1.data) : ''
+
+    // 第二轮：固定执行润色扩写（按你的要求，明确双请求）
+    const reprompt =
+      `请将下面草稿改写成 220-300 字的一整段中文分析，要求更具体、更可执行：\n` +
+      `硬性要求：\n` +
+      `1) 必须保留并明确写出“可信度 ${Number.isNaN(credibilityScore) ? '（无）' : credibilityScore}/100”与“风险等级${riskLevel || '（无）'}”。\n` +
+      `2) 至少包含两条可核验细节（时间/主体/事件/来源/关键原因）。\n` +
+      `3) 只输出一段正文，不要分点、不要标题、不要空话。\n` +
+      `4) 不得编造输入中不存在的事实。\n\n` +
+      `草稿：${draft || '（草稿为空，请基于给定信息直接生成）'}\n\n` +
+      `原始输入：\n${prompt}`
+    const completion2 = await requestCompletion([{ role: 'user', content: reprompt }])
+    if (completion2.success) {
+      const text2 = normalizeText(completion2.data)
+      if (text2 && effectiveLen(text2) >= 180) {
+        return toSuccess({
+          finalText: text2,
+          draftText: draft || '',
+          refinedText: text2,
+          rounds: 2,
+          source: 'model_refined',
+        })
+      }
+    }
+
+    // 最终兜底：本地组装成较完整段落，避免页面只剩一行
+    const factText = facts.length
+      ? facts
+          .map((f) => [f?.time, f?.subject, f?.event].filter(Boolean).join('，'))
+          .filter(Boolean)
+          .slice(0, 2)
+          .join('；')
+      : '当前文本可抽取到的结构化事实有限'
+    const reasonText = reasons.length ? reasons.slice(0, 3).join('；') : '未识别到稳定且可重复验证的核心证据链'
+    const suggestionText = suggestions.length ? suggestions.slice(0, 2).join('；') : '建议保留原始链接与关键片段，补充对照来源后再传播'
+    const fallbackText =
+      `围绕“${title || '该新闻文本'}”的核验结果显示，当前风险等级为${riskLevel || '未判定'}，可信度为 ${
+        Number.isNaN(credibilityScore) ? '—' : credibilityScore
+      }/100。已识别的关键信息包括：${factText}。从证据链看，主要问题集中在${reasonText}，这会直接影响结论稳定性与传播可靠性。综合判断，该内容不宜脱离原文语境进行二次转述，后续处置建议是：${suggestionText}。`
+    return toSuccess({
+      finalText: fallbackText,
+      draftText: draft || '',
+      refinedText: completion2.success ? normalizeText(completion2.data) : '',
+      rounds: 2,
+      source: 'fallback_template',
+    })
+  } catch (error) {
+    return toFailure(error?.message || 'generateDetailedSingleReport 执行失败')
+  }
+}
+
+export async function generateDetailedMultiReport(payload) {
+  try {
+    const coreFacts = Array.isArray(payload?.coreFacts) ? payload.coreFacts.slice(0, 6) : []
+    const factDifferences = Array.isArray(payload?.factDifferences) ? payload.factDifferences.slice(0, 8) : []
+    const missingInfo = Array.isArray(payload?.missingInfo) ? payload.missingInfo.slice(0, 6) : []
+    const verificationConclusion = String(payload?.verificationConclusion || '').trim()
+    const actionSuggestions = Array.isArray(payload?.actionSuggestions) ? payload.actionSuggestions.slice(0, 6) : []
+
+    const normalizeText = (raw) =>
+      String(raw || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    const dedupeSentences = (text) => {
+      const parts = String(text || '')
+        .split(/[。！？!?]/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+      const seen = new Set()
+      const kept = []
+      for (const p of parts) {
+        const key = p.replace(/[，、,\s]/g, '')
+        if (!key || seen.has(key)) continue
+        seen.add(key)
+        kept.push(p)
+      }
+      return kept.join('。') + (kept.length ? '。' : '')
+    }
+    const effectiveLen = (s) => s.replace(/\s/g, '').length
+
+    const prompt =
+      `你是“多源事件核查分析师”。请写一段具体的深度分析总结，重点围绕事实差异与核查路径。\n` +
+      `要求：\n` +
+      `1) 只输出一段正文，不要标题，不要分点，不要 JSON。\n` +
+      `2) 目标 200-280 字。\n` +
+      `3) 必须引用至少2条具体事实差异，并至少提及1个信息缺失项。\n` +
+      `4) 必须给出可落地核查结论与传播建议，不得只谈评分或权威性。\n` +
+      `5) 禁止编造输入中没有的信息。\n\n` +
+      `输入：\n` +
+      `核心事实一致点：${coreFacts.length ? coreFacts.join('；') : '（无）'}\n` +
+      `事实分歧点：${factDifferences.length ? factDifferences.join('；') : '（无）'}\n` +
+      `信息缺失项：${missingInfo.length ? missingInfo.join('；') : '（无）'}\n` +
+      `核查结论：${verificationConclusion || '（无）'}\n` +
+      `执行建议：${actionSuggestions.length ? actionSuggestions.join('；') : '（无）'}`
+
+    const first = await requestCompletion([{ role: 'user', content: prompt }])
+    const draft = first.success ? normalizeText(first.data) : ''
+    const secondPrompt =
+      `请将以下草稿改写为更具体的一段（220-300字），保留事实冲突细节与核查建议，禁止空泛套话。\n` +
+      `草稿：${draft || '（草稿为空，请直接基于输入生成）'}\n\n原始输入：\n${prompt}`
+    const second = await requestCompletion([{ role: 'user', content: secondPrompt }])
+    if (second.success) {
+      const finalText = dedupeSentences(normalizeText(second.data))
+      if (finalText && effectiveLen(finalText) >= 160) return toSuccess(finalText)
+    }
+    if (draft && effectiveLen(draft) >= 160) return toSuccess(dedupeSentences(draft))
+    return toFailure('多篇深度总结生成失败：千问返回内容过短或为空')
+  } catch (error) {
+    return toFailure(error?.message || 'generateDetailedMultiReport 执行失败')
+  }
+}
+
 /** 单篇流程：在风险/事实分析之前抽取真实标题与 ≤100 字核心概括（禁止输出 URL 作标题） */
 export async function extractNewsTitleAndSummary(cleanText) {
   try {

@@ -11,6 +11,8 @@ import {
   analyzeRisk,
   extractFacts,
   extractNewsTitleAndSummary,
+  generateDetailedMultiReport,
+  generateDetailedSingleReport,
   summarize,
 } from '../../src/backend/services/aiService.js'
 import { cleanArticleText, isLikelyUrl } from './newsCleaner.js'
@@ -367,6 +369,9 @@ function buildMultiCompareResult(items, factsGroup) {
 
   const pairScores = []
   const conflicts = []
+  const sharedFacts = []
+  const diffLines = []
+  const missingInfo = new Set()
 
   for (let i = 0; i < perItemEntries.length; i += 1) {
     for (let j = i + 1; j < perItemEntries.length; j += 1) {
@@ -410,11 +415,104 @@ function buildMultiCompareResult(items, factsGroup) {
       if (pairScore < 0.7) {
         conflicts.push(`第${i + 1}篇与第${j + 1}篇核心叙事一致性偏低（${Math.round(pairScore * 100)}%）`)
       }
+
+      const rightPool = right.map((x) => ({ ...x, used: false }))
+      left.forEach((l) => {
+        let best = null
+        let bestScore = 0
+        rightPool.forEach((r) => {
+          if (r.used) return
+          let s = similarity(l.key, r.key)
+          if (l.subject && r.subject && l.subject === r.subject) s += 0.2
+          s = Math.min(1, s)
+          if (s > bestScore) {
+            bestScore = s
+            best = r
+          }
+        })
+        if (!best || bestScore < 0.3) return
+        best.used = true
+
+        const briefL = [l.subject, l.event].filter(Boolean).join(' / ')
+        const briefR = [best.subject, best.event].filter(Boolean).join(' / ')
+        if (bestScore >= 0.72) {
+          sharedFacts.push(`第${i + 1}篇与第${j + 1}篇均提到：${briefL || briefR || '同一核心事件'}`)
+        }
+
+        if (l.score && best.score && l.score !== best.score) {
+          diffLines.push(`第${i + 1}篇与第${j + 1}篇数字表述冲突：${l.score} vs ${best.score}`)
+        }
+        if (l.subject && best.subject && l.subject !== best.subject && bestScore >= 0.5) {
+          diffLines.push(`第${i + 1}篇与第${j + 1}篇主体指向存在差异：${l.subject} vs ${best.subject}`)
+        }
+      })
     }
   }
 
+  // 从原始输入补充“数字/时间”冲突检测，避免 AI 事实抽取偏差时漏判
+  const rawTexts = (Array.isArray(items) ? items : []).map((it) =>
+    String(it?.text || it?.url || '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  )
+  const extractPercent = (text) => {
+    const m = text.match(/(\d+(?:\.\d+)?)\s*%/)
+    return m ? m[1] : ''
+  }
+  const extractDate = (text) => {
+    const m = text.match(/(\d{1,2})月(\d{1,2})[日号]?/)
+    return m ? `${m[1]}月${m[2]}日` : ''
+  }
+  for (let i = 0; i < rawTexts.length; i += 1) {
+    for (let j = i + 1; j < rawTexts.length; j += 1) {
+      const p1 = extractPercent(rawTexts[i])
+      const p2 = extractPercent(rawTexts[j])
+      if (p1 && p2 && p1 !== p2) {
+        diffLines.push(`第${i + 1}篇与第${j + 1}篇关键数字不一致：${p1}% vs ${p2}%`)
+      }
+      const d1 = extractDate(rawTexts[i])
+      const d2 = extractDate(rawTexts[j])
+      if (d1 && d2 && d1 !== d2) {
+        diffLines.push(`第${i + 1}篇与第${j + 1}篇时间线不一致：${d1} vs ${d2}`)
+      }
+    }
+  }
+
+  normalizedFactsGroup.forEach((group, idx) => {
+    if (!group.length) {
+      missingInfo.add(`第${idx + 1}篇缺少可抽取的结构化事实（时间/主体/事件）`)
+      return
+    }
+    let hasTime = false
+    let hasSource = false
+    group.forEach((f) => {
+      if (String(f?.time || '').trim()) hasTime = true
+      if (String(f?.source || '').trim()) hasSource = true
+    })
+    if (!hasTime) missingInfo.add(`第${idx + 1}篇未明确关键事件时间点`)
+    if (!hasSource) missingInfo.add(`第${idx + 1}篇未明确消息来源`)
+  })
+
   const consistencyScore =
     pairScores.length === 0 ? 0 : Number(((pairScores.reduce((sum, n) => sum + n, 0) / pairScores.length) * 100).toFixed(2))
+
+  const coreFacts = [...new Set(sharedFacts)].slice(0, 5)
+  const factDifferences = [...new Set(diffLines.length ? diffLines : conflicts)].slice(0, 6)
+  const missingList = [...missingInfo].slice(0, 5)
+  const verificationConclusion =
+    consistencyScore >= 70
+      ? '多源文本在关键事实上总体一致，现有分歧主要集中在细节表述层面，可作为参考但仍需保留来源链路。'
+      : consistencyScore >= 45
+        ? '多源文本存在可识别分歧，尤其在时间线或关键细节上未完全对齐，当前仅适合“待核验”传播。'
+        : '多源文本在核心事实层面冲突明显，现阶段不宜下确定性结论，应先完成针对性事实核查。'
+  const actionSuggestions = [
+    factDifferences[0] ? `优先核查分歧点：${factDifferences[0]}` : '',
+    missingList[0] ? `补齐缺失信息：${missingList[0]}` : '',
+    '回看原文发布时间、原始引述与上下文段落，避免二手转载造成语义偏移',
+    '传播时标注“已核验/待核验”状态，并附上对照来源链接',
+  ]
+    .filter(Boolean)
+    .slice(0, 4)
 
   return {
     consistencyScore,
@@ -422,6 +520,13 @@ function buildMultiCompareResult(items, factsGroup) {
     sourceAuthorityDiff: '来源权威性待结合媒体等级进一步评估',
     recommendation: consistencyScore >= 70 ? '整体一致性较高，可作为参考信息' : '一致性偏低，建议人工复核',
     perItemFacts: normalizedFactsGroup,
+    deepAnalysis: {
+      coreFacts: coreFacts.length ? coreFacts : ['尚未提炼出稳定的一致事实，请补充更完整文本后重试'],
+      factDifferences: factDifferences.length ? factDifferences : ['当前未识别到明确的逐条事实冲突'],
+      missingInfo: missingList.length ? missingList : ['当前文本未暴露明显的信息缺失项'],
+      verificationConclusion,
+      actionSuggestions,
+    },
   }
 }
 
@@ -1154,17 +1259,49 @@ app.post('/api/v1/analysis/single', async (req, res) => {
     facts: factsResult.data.facts,
     risk,
   })
+  const credibilityScore = Number((100 - fakeScore).toFixed(2))
+  const detailReportResult = await generateDetailedSingleReport({
+    title: meta.newsTitle,
+    summary: meta.newsSummary,
+    riskLevel,
+    credibilityScore,
+    reasons: dynamicExplain.reasons,
+    suggestions: dynamicExplain.suggestions,
+    facts: factsResult.data.facts,
+  })
+  const detailPayload =
+    detailReportResult.success && detailReportResult.data && typeof detailReportResult.data === 'object'
+      ? detailReportResult.data
+      : null
+  const detailReportText = detailPayload?.finalText || ''
   const output = {
     facts: factsResult.data.facts,
     risk,
     aiSummary: meta.newsSummary,
+    detailedReport: detailReportText
+      ? detailReportText
+      : [
+          `本条内容当前判定为${riskLevel}，可信度 ${credibilityScore}/100。`,
+          dynamicExplain.reasons?.[0] || '',
+          dynamicExplain.reasons?.[1] || '',
+          dynamicExplain.suggestions?.[0] || '',
+        ]
+          .filter(Boolean)
+          .join(' '),
+    detailedReportTrace: {
+      rounds: detailPayload?.rounds || 0,
+      source: detailPayload?.source || 'fallback_short',
+      draftText: detailPayload?.draftText || '',
+      refinedText: detailPayload?.refinedText || '',
+      finalText: detailReportText || '',
+    },
     meta: {
       newsTitle: meta.newsTitle,
       newsSummary: meta.newsSummary,
       sourceUrl: meta.sourceUrl,
       sourceName: meta.sourceName,
     },
-    credibilityScore: Number((100 - fakeScore).toFixed(2)),
+    credibilityScore,
     verdict: riskLevel === '高风险' ? '可疑' : riskLevel === '中风险' ? '存疑' : '可信',
     riskLevel,
     reasons: dynamicExplain.reasons,
@@ -1263,7 +1400,6 @@ app.post('/api/v1/analysis/multi', async (req, res) => {
     }),
   )
 
-  const factsResults = []
   for (const b of bundles) {
     if (b.resolved.fromUrl && !b.resolved.fetchedFromUrl) {
       return res.status(422).json(
@@ -1273,15 +1409,31 @@ app.post('/api/v1/analysis/multi', async (req, res) => {
     if (!b.resolved.text) {
       return res.status(422).json(fail('未获取到可分析文本，请检查输入', 422, 'VALIDATION_ERROR'))
     }
-    const fr = await extractFacts(b.resolved.text)
-    if (!fr.success) {
-      return res.status(502).json(fail(`多篇事实抽取失败：${fr.msg}`, 502, 'AI_SERVICE_ERROR'))
-    }
-    factsResults.push(fr)
+  }
+
+  // 并发抽取每篇事实，避免串行调用导致总耗时随篇数线性增长
+  const factsResults = await Promise.all(bundles.map((b) => extractFacts(b.resolved.text)))
+  const firstFailed = factsResults.find((r) => !r.success)
+  if (firstFailed) {
+    return res.status(502).json(fail(`多篇事实抽取失败：${firstFailed.msg}`, 502, 'AI_SERVICE_ERROR'))
   }
 
   const factsGroup = factsResults.map((r) => r.data.facts)
   const output = buildMultiCompareResult(items, factsGroup)
+  const deep = output.deepAnalysis || {}
+  const detailedMulti = await generateDetailedMultiReport({
+    coreFacts: deep.coreFacts,
+    factDifferences: deep.factDifferences,
+    missingInfo: deep.missingInfo,
+    verificationConclusion: deep.verificationConclusion,
+    actionSuggestions: deep.actionSuggestions,
+  })
+  if (!detailedMulti.success) {
+    return res
+      .status(502)
+      .json(fail(`多篇深度总结失败：${detailedMulti.msg || '千问调用失败'}`, 502, 'AI_SERVICE_ERROR'))
+  }
+  output.detailedReport = detailedMulti.data
   const fakeScore = Number((100 - output.consistencyScore).toFixed(2))
   const riskLevel = fakeScore >= 70 ? '高风险' : fakeScore >= 45 ? '中风险' : '低风险'
 
@@ -1797,7 +1949,6 @@ function collectWorkflowJsonRoots(apiData) {
 
   return roots
 }
-
 /** 旧版 / 兜底：从任意对象里抽出“新闻条目数组” */
 function normalizeDashscopeWorkflowItemsLegacy(obj) {
   if (!obj) return []
@@ -1851,7 +2002,6 @@ function pickLongestNewsListArray(obj) {
   }
   return best
 }
-
 /**
  * 解析百炼工作流 JSON（新约定优先）：
  * - { result: { newsCount, duplicateRemovedCount, newsAnalysis, overallRiskLevel, overallConclusion } }
@@ -1922,10 +2072,30 @@ function extractWorkflowResult(workflowJson) {
   // 新格式：result 包裹对象（多列表字段并存时取条数最多的一份，保证「有几条写几条」）
   if (workflowJson.result && typeof workflowJson.result === 'object') {
     const r = workflowJson.result
+
+    // 优先兼容已知字段
+    if (Array.isArray(r.newsAnalysis)) {
+      return { items: r.newsAnalysis, meta: metaFrom(r) }
+    }
+    if (Array.isArray(r.articles)) {
+      return { items: r.articles, meta: metaFrom(r) }
+    }
+    if (Array.isArray(r.items)) {
+      return { items: r.items, meta: metaFrom(r) }
+    }
+    if (Array.isArray(r.data)) {
+      return { items: r.data, meta: metaFrom(r) }
+    }
+    if (Array.isArray(r.records)) {
+      return { items: r.records, meta: metaFrom(r) }
+    }
+
+    // 多列表字段并存时取条数最多的一份，保证「有几条写几条」
     const longest = pickLongestNewsListArray(r)
     if (longest && longest.length) {
       return { items: longest, meta: metaFrom(r) }
     }
+
     const fromR = normalizeDashscopeWorkflowItemsLegacy(r)
     if (fromR.length) {
       return { items: fromR, meta: metaFrom(r) }
@@ -1933,6 +2103,16 @@ function extractWorkflowResult(workflowJson) {
   }
 
   // 顶层平铺（无 result）
+  // 顶层平铺（无 result）
+  if (Array.isArray(workflowJson.newsAnalysis)) {
+    return { items: workflowJson.newsAnalysis, meta: metaFrom(workflowJson) }
+  }
+  if (Array.isArray(workflowJson.articles)) {
+    return { items: workflowJson.articles, meta: metaFrom(workflowJson) }
+  }
+  if (Array.isArray(workflowJson.items)) {
+    return { items: workflowJson.items, meta: metaFrom(workflowJson) }
+  }
   const topLongest = pickLongestNewsListArray(workflowJson)
   if (topLongest && topLongest.length) {
     return { items: topLongest, meta: metaFrom(workflowJson) }
@@ -2119,46 +2299,65 @@ async function runNewsWorkflowHandler(req, res) {
       response?.data?.text ||
       null
 
-    const apiData = response?.data
-    const roots = collectWorkflowJsonRoots(apiData)
+    let parsed = null
+    try {
+      parsed = JSON.parse(workflowText)
+    } catch {
+      parsed = null
+    }
+    if (!parsed) parsed = extractJsonFromText(workflowText)
+    if (!parsed) parsed = response?.data
+
+    // Try to extract items from parsed result (prefer extractWorkflowResult logic)
     let items = []
     let workflowMeta = null
-    for (const root of roots) {
-      const { items: got, meta } = extractWorkflowResult(root)
-      if (got.length > items.length) {
-        items = got
-        workflowMeta = meta ?? workflowMeta
-      }
+    let rootSource = parsed
+
+    // Try using extractWorkflowResult first
+    if (parsed) {
+      const res = extractWorkflowResult(parsed)
+      items = res.items || []
+      workflowMeta = res.meta || null
+      rootSource = parsed
     }
 
-    if (!items.length && apiData && typeof apiData === 'object') {
-      const deep = findBestNewsLikeArrayDeep(apiData)
+    // Fallback: try to extract items from deep news-like arrays if none found
+    if (!items.length && parsed && typeof parsed === 'object') {
+      const deep = findBestNewsLikeArrayDeep(parsed)
       if (deep.length) items = deep
     }
 
+    // If workflowMeta declares an expected newsCount greater than what we've found, try to find a better array
     const ncMeta = workflowMeta?.newsCount != null ? Number(workflowMeta.newsCount) : NaN
     if (
-      apiData &&
-      typeof apiData === 'object' &&
+      parsed &&
+      typeof parsed === 'object' &&
       Number.isFinite(ncMeta) &&
       ncMeta > items.length
     ) {
-      const deep = findBestNewsLikeArrayDeep(apiData)
+      const deep = findBestNewsLikeArrayDeep(parsed)
       if (deep.length > items.length && deep.length <= ncMeta) items = deep
     }
 
-    const parsed = roots[0] || apiData || null
-
+    // If still no items, and could be a result string, try the classic "result" extraction from rootSource
     if (!items.length) {
       let r = null
-      for (const root of roots) {
-        if (root && typeof root === 'object' && typeof root.result === 'string') {
-          r = root.result
-          break
+      
+      // Try result field in possible root objects (array or plain object)
+      if (Array.isArray(rootSource)) {
+        for (const root of rootSource) {
+          if (root && typeof root === 'object' && typeof root.result === 'string') {
+            r = root.result
+            break
+          }
         }
+      } else if (rootSource && typeof rootSource === 'object' && typeof rootSource.result === 'string') {
+        r = rootSource.result
       }
-      if (r == null && parsed && typeof parsed === 'object' && typeof parsed.result === 'string') {
-        r = parsed.result
+
+      // fallback if previous attempt failed, try response?.data.result string
+      if (r == null && response?.data && typeof response.data === 'object' && typeof response.data.result === 'string') {
+        r = response.data.result
       }
       if (typeof r === 'string' && r.trim()) {
         const t = r.trim()
