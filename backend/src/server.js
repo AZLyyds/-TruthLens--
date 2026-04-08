@@ -1697,6 +1697,107 @@ function tryParseJsonString(s) {
   }
 }
 
+/** 深度扫描用：判断数组元素是否像单条新闻工作流条目 */
+function isNewsLikeRecord(el) {
+  if (!el || typeof el !== 'object' || Array.isArray(el)) return false
+  const hasTitle = !!(el.titleCN || el.title_cn || el.title || el.newsTitle || el.headline)
+  const hasBody = !!(el.contentCN || el.content_cn || el.content || el.body || el.article || el.summary)
+  const hasUrl = !!(el.url || el.link || el.source_url)
+  const n = (hasTitle ? 1 : 0) + (hasBody ? 1 : 0) + (hasUrl ? 1 : 0)
+  return n >= 2 || (hasTitle && hasBody)
+}
+
+/** 在任意嵌套对象中找出「新闻条数最多」的数组（兼容结束节点把列表放在非常规字段） */
+function findBestNewsLikeArrayDeep(root) {
+  let best = []
+  const visit = (node, depth) => {
+    if (depth > 14 || node == null) return
+    if (Array.isArray(node)) {
+      const allPlainObjects =
+        node.length > 0 &&
+        node.every((el) => el != null && typeof el === 'object' && !Array.isArray(el))
+      if (allPlainObjects) {
+        if (node.length > best.length) best = node
+      } else {
+        const hits = node.filter(isNewsLikeRecord)
+        if (hits.length > best.length) {
+          best = hits.length === node.length ? node : hits
+        }
+      }
+      return
+    }
+    if (typeof node !== 'object') return
+    for (const k of Object.keys(node)) {
+      visit(node[k], depth + 1)
+    }
+  }
+  visit(root, 0)
+  return best
+}
+
+/**
+ * 从百炼 Apps completion 整包收集多个「可能含 newsAnalysis 的 JSON 根」，逐一交给 extractWorkflowResult。
+ */
+function collectWorkflowJsonRoots(apiData) {
+  const roots = []
+  const seen = new Set()
+  const push = (x) => {
+    if (x == null) return
+    if (typeof x === 'string') {
+      const t = x.trim()
+      if (!t) return
+      const p = tryParseJsonString(t) || extractJsonFromText(t)
+      if (p && typeof p === 'object') {
+        const sig = JSON.stringify(p).slice(0, 2400)
+        if (seen.has(sig)) return
+        seen.add(sig)
+        roots.push(p)
+      }
+      return
+    }
+    if (typeof x === 'object') {
+      const sig = JSON.stringify(x).slice(0, 2400)
+      if (seen.has(sig)) return
+      seen.add(sig)
+      roots.push(x)
+    }
+  }
+
+  if (!apiData || typeof apiData !== 'object') return roots
+
+  const out = apiData.output
+  if (typeof out === 'string') {
+    push(out)
+  } else if (out && typeof out === 'object') {
+    if (typeof out.text === 'string') push(out.text)
+    if (out.result != null) push(out.result)
+    if (out.result && typeof out.result === 'object' && typeof out.result.text === 'string') {
+      push(out.result.text)
+    }
+    push(out)
+  }
+
+  push(apiData)
+  if (apiData.data != null) push(apiData.data)
+  if (typeof apiData.text === 'string') push(apiData.text)
+
+  const choices = apiData.choices || (out && typeof out === 'object' ? out.choices : null)
+  if (Array.isArray(choices)) {
+    for (const ch of choices) {
+      const c = ch?.message?.content ?? ch?.delta?.content ?? ch?.text
+      if (typeof c === 'string') push(c)
+      if (Array.isArray(c)) {
+        for (const part of c) {
+          if (typeof part === 'string') push(part)
+          else if (part && typeof part === 'object' && typeof part.text === 'string') push(part.text)
+        }
+      }
+    }
+  }
+
+  return roots
+}
+
 /** 旧版 / 兜底：从任意对象里抽出“新闻条目数组” */
 function normalizeDashscopeWorkflowItemsLegacy(obj) {
   if (!obj) return []
@@ -1709,12 +1810,46 @@ function normalizeDashscopeWorkflowItemsLegacy(obj) {
   if (Array.isArray(obj.results)) return obj.results
   if (Array.isArray(obj.news)) return obj.news
   if (Array.isArray(obj.records)) return obj.records
+  if (Array.isArray(obj.analyses)) return obj.analyses
+  if (Array.isArray(obj.list)) return obj.list
   if (Array.isArray(obj.data?.items)) return obj.data.items
   if (Array.isArray(obj.data?.newsAnalysis)) return obj.data.newsAnalysis
   if (Array.isArray(obj.data?.articles)) return obj.data.articles
   if (obj.news && Array.isArray(obj.news.items)) return obj.news.items
   if (obj.title || obj.content || obj.url || obj.news_uid || obj.newsUid) return [obj]
   return []
+}
+
+/** 数组是否像「新闻条目列表」（避免误选纯数字、字符串等非新闻长数组） */
+function isUsableNewsItemArray(a) {
+  if (!Array.isArray(a) || !a.length) return false
+  const allPlainObjects = a.every((el) => el != null && typeof el === 'object' && !Array.isArray(el))
+  if (allPlainObjects) return true
+  return a.some(isNewsLikeRecord)
+}
+
+/** 从工作流 result / 顶层对象上多个「新闻列表」字段中取条数最多的一份，避免只用已合并的 newsAnalysis 而丢掉更长的 articles/items */
+function pickLongestNewsListArray(obj) {
+  if (!obj || typeof obj !== 'object') return null
+  const keys = [
+    'newsAnalysis',
+    'articles',
+    'items',
+    'articleList',
+    'newsList',
+    'records',
+    'data',
+    'fetchedList',
+    'rawArticles',
+    'allNews',
+  ]
+  let best = null
+  for (const k of keys) {
+    const a = obj[k]
+    if (!isUsableNewsItemArray(a)) continue
+    if (!best || a.length > best.length) best = a
+  }
+  return best
 }
 
 /**
@@ -1784,23 +1919,12 @@ function extractWorkflowResult(workflowJson) {
     }
   }
 
-  // 新格式：result 包裹对象
+  // 新格式：result 包裹对象（多列表字段并存时取条数最多的一份，保证「有几条写几条」）
   if (workflowJson.result && typeof workflowJson.result === 'object') {
     const r = workflowJson.result
-    if (Array.isArray(r.newsAnalysis)) {
-      return { items: r.newsAnalysis, meta: metaFrom(r) }
-    }
-    if (Array.isArray(r.articles)) {
-      return { items: r.articles, meta: metaFrom(r) }
-    }
-    if (Array.isArray(r.items)) {
-      return { items: r.items, meta: metaFrom(r) }
-    }
-    if (Array.isArray(r.data)) {
-      return { items: r.data, meta: metaFrom(r) }
-    }
-    if (Array.isArray(r.records)) {
-      return { items: r.records, meta: metaFrom(r) }
+    const longest = pickLongestNewsListArray(r)
+    if (longest && longest.length) {
+      return { items: longest, meta: metaFrom(r) }
     }
     const fromR = normalizeDashscopeWorkflowItemsLegacy(r)
     if (fromR.length) {
@@ -1809,14 +1933,9 @@ function extractWorkflowResult(workflowJson) {
   }
 
   // 顶层平铺（无 result）
-  if (Array.isArray(workflowJson.newsAnalysis)) {
-    return { items: workflowJson.newsAnalysis, meta: metaFrom(workflowJson) }
-  }
-  if (Array.isArray(workflowJson.articles)) {
-    return { items: workflowJson.articles, meta: metaFrom(workflowJson) }
-  }
-  if (Array.isArray(workflowJson.items)) {
-    return { items: workflowJson.items, meta: metaFrom(workflowJson) }
+  const topLongest = pickLongestNewsListArray(workflowJson)
+  if (topLongest && topLongest.length) {
+    return { items: topLongest, meta: metaFrom(workflowJson) }
   }
 
   // 旧版：res3.res 为字符串 JSON
@@ -1831,7 +1950,12 @@ function extractWorkflowResult(workflowJson) {
   }
 
   const legacy = normalizeDashscopeWorkflowItemsLegacy(workflowJson)
-  return { items: legacy, meta: null }
+  if (legacy.length) return { items: legacy, meta: null }
+
+  const deep = findBestNewsLikeArrayDeep(workflowJson)
+  if (deep.length) return { items: deep, meta: metaFrom(workflowJson) }
+
+  return { items: [], meta: null }
 }
 
 function toMysqlDateTime(value) {
@@ -1995,18 +2119,47 @@ async function runNewsWorkflowHandler(req, res) {
       response?.data?.text ||
       null
 
-    let parsed = null
-    try {
-      parsed = JSON.parse(workflowText)
-    } catch {
-      parsed = null
+    const apiData = response?.data
+    const roots = collectWorkflowJsonRoots(apiData)
+    let items = []
+    let workflowMeta = null
+    for (const root of roots) {
+      const { items: got, meta } = extractWorkflowResult(root)
+      if (got.length > items.length) {
+        items = got
+        workflowMeta = meta ?? workflowMeta
+      }
     }
-    if (!parsed) parsed = extractJsonFromText(workflowText)
-    if (!parsed) parsed = response?.data
-    const { items, meta: workflowMeta } = extractWorkflowResult(parsed)
+
+    if (!items.length && apiData && typeof apiData === 'object') {
+      const deep = findBestNewsLikeArrayDeep(apiData)
+      if (deep.length) items = deep
+    }
+
+    const ncMeta = workflowMeta?.newsCount != null ? Number(workflowMeta.newsCount) : NaN
+    if (
+      apiData &&
+      typeof apiData === 'object' &&
+      Number.isFinite(ncMeta) &&
+      ncMeta > items.length
+    ) {
+      const deep = findBestNewsLikeArrayDeep(apiData)
+      if (deep.length > items.length && deep.length <= ncMeta) items = deep
+    }
+
+    const parsed = roots[0] || apiData || null
 
     if (!items.length) {
-      const r = parsed && typeof parsed === 'object' ? parsed.result : null
+      let r = null
+      for (const root of roots) {
+        if (root && typeof root === 'object' && typeof root.result === 'string') {
+          r = root.result
+          break
+        }
+      }
+      if (r == null && parsed && typeof parsed === 'object' && typeof parsed.result === 'string') {
+        r = parsed.result
+      }
       if (typeof r === 'string' && r.trim()) {
         const t = r.trim()
         const looksStructured =
@@ -2070,6 +2223,9 @@ async function runNewsWorkflowHandler(req, res) {
         fakeScore = Number((fakeScore * 10).toFixed(2))
       }
       const normalizedFakeScore = fakeScore != null && !Number.isNaN(fakeScore) ? fakeScore : null
+      // analysis_records.fake_score 为 NOT NULL：缺省时用中性分入库，避免整批工作流因 SQL 报错变成 502
+      const dbFakeScore =
+        normalizedFakeScore != null && !Number.isNaN(normalizedFakeScore) ? normalizedFakeScore : 50
       let riskLevel = normalizeRiskLevel(
         merged?.risk_level || merged?.riskLevel || merged?.risk || null,
         normalizedFakeScore,
@@ -2112,7 +2268,7 @@ async function runNewsWorkflowHandler(req, res) {
             },
           ),
           JSON.stringify(outputJson),
-          normalizedFakeScore,
+          dbFakeScore,
           riskLevel,
         ],
       )

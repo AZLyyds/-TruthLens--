@@ -266,7 +266,6 @@ async function triggerWorkflow() {
     if (w && typeof w === 'object') {
       const bits = []
       if (w.newsCount != null) bits.push(`抓取 ${w.newsCount} 条`)
-      if (w.duplicateRemovedCount != null) bits.push(`去重后 ${w.duplicateRemovedCount} 条`)
       if (w.overallRiskLevel) bits.push(`整体 ${String(w.overallRiskLevel)}`)
       if (bits.length) msg += `（${bits.join('，')}）`
       if (w.overallConclusion) {
