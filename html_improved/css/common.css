@@ -1,0 +1,242 @@
+/* TruthLens 静态演示 — 红色主题，软硬适中、少「生硬的框」 */
+
+:root {
+  --theme-red: #90080e;
+  --theme-red-hover: #7a070c;
+  --red-100: #fee2e2;
+  --red-50: #fef2f2;
+  --bg: #f4f4f3;
+  --card: #ffffff;
+  --text: #1c1917;
+  --text-hover: #0c0a09;
+  --muted: #78716c;
+  --border: #e7e5e4;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+a {
+  color: var(--theme-red);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+a:hover {
+  color: var(--text-hover);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+/* 顶栏 */
+.site-topbar {
+  background: var(--theme-red);
+  color: #fff;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.1);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.site-topbar-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.site-logo {
+  font-weight: 800;
+  font-size: 1.15rem;
+  letter-spacing: 0.04em;
+  color: #fff;
+  text-decoration: none;
+  transition: opacity 0.2s ease;
+}
+
+.site-logo:hover {
+  opacity: 0.92;
+  text-decoration: none;
+}
+
+.site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  font-size: 0.9rem;
+}
+
+.site-nav a {
+  color: rgba(255, 255, 255, 0.88);
+  text-decoration: none;
+  padding: 8px 12px;
+  border-radius: 0;
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.site-nav a:hover {
+  color: #fff;
+  background: transparent;
+  text-decoration: none;
+  border-bottom-color: rgba(255, 255, 255, 0.45);
+}
+
+.site-nav a.is-active {
+  color: #fff;
+  font-weight: 600;
+  background: transparent;
+  border-bottom-color: #fff;
+}
+
+.page-wrap {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 22px 18px 40px;
+}
+
+.page-title {
+  margin: 0 0 8px;
+  font-size: 1.65rem;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.page-desc {
+  margin: 0 0 22px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 18px;
+  font-size: 15px;
+  font-weight: 600;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.btn:active {
+  transform: scale(0.99);
+}
+
+.btn-primary {
+  color: #fff;
+  background: var(--theme-red);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.btn-primary:hover {
+  background: var(--theme-red-hover);
+  color: #fff;
+}
+
+.btn-ghost {
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.btn-ghost:hover {
+  color: var(--text-hover);
+  background: transparent;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-size: 15px;
+  font-family: inherit;
+  background: #fff;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+input:hover,
+textarea:hover {
+  border-color: #d6d3d1;
+}
+
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: rgba(144, 8, 14, 0.35);
+  box-shadow: 0 0 0 3px rgba(144, 8, 14, 0.08);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 120px;
+}
+
+label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #57534e;
+  margin-bottom: 6px;
+}
+
+.form-group {
+  margin-bottom: 14px;
+}
+
+.page-footer-note {
+  margin-top: 28px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-align: center;
+}

@@ -1,0 +1,558 @@
+openapi: 3.0.3
+info:
+  title: TruthLens API
+  version: 1.0.0
+  description: API contract for TruthLens agent-driven architecture.
+servers:
+  - url: /api/v1
+tags:
+  - name: Auth
+  - name: News
+  - name: Analysis
+  - name: Profile
+  - name: Dashboard
+  - name: Alerts
+  - name: Agent
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: User login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Login success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/LoginResult"
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: User register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                email:
+                  type: string
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Register success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiEnvelope"
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        "200":
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          accessToken:
+                            type: string
+  /news:
+    get:
+      tags: [News]
+      summary: Get news feed
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            default: 20
+        - in: query
+          name: source
+          schema:
+            type: string
+        - in: query
+          name: risk
+          schema:
+            type: string
+        - in: query
+          name: keyword
+          schema:
+            type: string
+      responses:
+        "200":
+          description: News page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/NewsItem"
+                          page:
+                            type: integer
+                          pageSize:
+                            type: integer
+                          total:
+                            type: integer
+  /news/{id}:
+    get:
+      tags: [News]
+      summary: Get news detail
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: News detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/NewsDetail"
+  /analysis/single:
+    post:
+      tags: [Analysis]
+      summary: Analyze a single news input
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                url:
+                  type: string
+                newsId:
+                  type: string
+      responses:
+        "200":
+          description: Single analysis result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SingleAnalysisResult"
+  /analysis/multi:
+    post:
+      tags: [Analysis]
+      summary: Compare multi-source inputs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 2
+                  items:
+                    type: object
+                    properties:
+                      text:
+                        type: string
+                      url:
+                        type: string
+                      newsId:
+                        type: string
+      responses:
+        "200":
+          description: Multi analysis result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/MultiAnalysisResult"
+  /profile/me:
+    get:
+      tags: [Profile]
+      summary: Get current user profile
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ProfileInfo"
+  /profile/history:
+    get:
+      tags: [Profile]
+      summary: Get analysis history
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: History page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/HistoryItem"
+                          page:
+                            type: integer
+                          pageSize:
+                            type: integer
+                          total:
+                            type: integer
+  /dashboard/overview:
+    get:
+      tags: [Dashboard]
+      summary: Dashboard overview metrics
+      responses:
+        "200":
+          description: Overview metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiEnvelope"
+  /dashboard/trends:
+    get:
+      tags: [Dashboard]
+      summary: Dashboard risk trend
+      responses:
+        "200":
+          description: Trend data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiEnvelope"
+  /dashboard/ranking:
+    get:
+      tags: [Dashboard]
+      summary: Dashboard media ranking
+      responses:
+        "200":
+          description: Ranking data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiEnvelope"
+  /dashboard/alerts:
+    get:
+      tags: [Dashboard]
+      summary: Dashboard alert data
+      responses:
+        "200":
+          description: Alert data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiEnvelope"
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: List warning events
+      responses:
+        "200":
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiEnvelope"
+  /alerts/rules:
+    post:
+      tags: [Alerts]
+      summary: Upsert alert threshold rules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                riskThreshold:
+                  type: integer
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Rule upserted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiEnvelope"
+  /agent/tasks/analyze:
+    post:
+      tags: [Agent]
+      summary: Submit orchestrated analysis task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [single, multi]
+                payload:
+                  type: object
+      responses:
+        "200":
+          description: Task created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AgentTask"
+  /agent/tasks/{taskId}:
+    get:
+      tags: [Agent]
+      summary: Get task status
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AgentTask"
+components:
+  schemas:
+    ApiEnvelope:
+      type: object
+      required: [code, message, data, requestId, ts]
+      properties:
+        code:
+          type: integer
+          example: 0
+        message:
+          type: string
+          example: ok
+        data:
+          nullable: true
+        requestId:
+          type: string
+          example: req_1711963000123
+        ts:
+          type: string
+          format: date-time
+    LoginResult:
+      type: object
+      properties:
+        userId:
+          type: string
+        username:
+          type: string
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+    NewsItem:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        source:
+          type: string
+        risk:
+          type: string
+          enum: [低风险, 中风险, 高风险]
+        publishedAt:
+          type: string
+          format: date-time
+    NewsDetail:
+      allOf:
+        - $ref: "#/components/schemas/NewsItem"
+        - type: object
+          properties:
+            content:
+              type: string
+            url:
+              type: string
+    SingleAnalysisResult:
+      type: object
+      properties:
+        credibilityScore:
+          type: integer
+        verdict:
+          type: string
+          enum: [真实, 存疑, 虚假]
+        riskLevel:
+          type: string
+          enum: [低风险, 中风险, 高风险]
+        reasons:
+          type: array
+          items:
+            type: string
+        suggestions:
+          type: array
+          items:
+            type: string
+        dimensions:
+          type: object
+          properties:
+            sourceCredibility:
+              type: integer
+            factConsistency:
+              type: integer
+            emotionManipulation:
+              type: integer
+            propagationMisleading:
+              type: integer
+    MultiAnalysisResult:
+      type: object
+      properties:
+        consistencyScore:
+          type: integer
+        conflicts:
+          type: array
+          items:
+            type: string
+        sourceAuthorityDiff:
+          type: string
+        recommendation:
+          type: string
+    ProfileInfo:
+      type: object
+      properties:
+        username:
+          type: string
+        preferences:
+          type: array
+          items:
+            type: string
+        stats:
+          type: object
+          properties:
+            viewed:
+              type: integer
+            analyzed:
+              type: integer
+            highRiskHits:
+              type: integer
+    HistoryItem:
+      type: object
+      properties:
+        id:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        type:
+          type: string
+          enum: [single, multi]
+        title:
+          type: string
+    AgentTask:
+      type: object
+      properties:
+        taskId:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, success, failed]
+        retryCount:
+          type: integer
+        summary:
+          type: string

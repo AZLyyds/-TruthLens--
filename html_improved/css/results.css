@@ -1,0 +1,267 @@
+/* 单篇 / 多篇分析 — 静态模拟输出（贴近 ResultCard / MultiAnalysisView） */
+
+.result-mock {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.result-mock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.result-mock-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.result-mock-export {
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 6px 4px;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.result-mock-export:hover {
+  color: var(--text-hover);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.result-block {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.result-block:last-of-type {
+  border-bottom: none;
+}
+
+.result-block-title {
+  margin: 0 0 12px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.result-news-title {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.result-meta {
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  color: #a8a29e;
+}
+
+.result-summary {
+  margin: 0 0 14px;
+  font-size: 0.92rem;
+  color: #44403c;
+  line-height: 1.55;
+}
+
+.result-scores {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+}
+
+.result-score-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 0.9rem;
+}
+
+.result-score-row span {
+  color: var(--muted);
+}
+
+.result-score-row strong {
+  font-size: 1.05rem;
+  color: var(--text);
+}
+
+.result-score-row strong.verdict-mid {
+  color: #b45309;
+}
+
+.result-meters {
+  display: grid;
+  gap: 12px;
+}
+
+.result-meter label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: #57534e;
+}
+
+.result-meter .meter {
+  height: 8px;
+  border-radius: 4px;
+  background: #e7e5e4;
+  overflow: hidden;
+}
+
+.result-meter .meter > i {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: #57534e;
+}
+
+.result-meter .meter.meter-warn > i {
+  background: #b45309;
+}
+
+.result-meter .meter.meter-danger > i {
+  background: var(--theme-red);
+}
+
+.result-facts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.result-facts li {
+  padding: 10px 12px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  border-left: 3px solid var(--border);
+  transition: border-color 0.2s ease;
+}
+
+.result-facts li:hover {
+  border-left-color: rgba(144, 8, 14, 0.35);
+}
+
+.result-facts .fact-time {
+  display: block;
+  font-size: 0.75rem;
+  color: #a8a29e;
+  margin-bottom: 4px;
+}
+
+.result-detail-text {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #44403c;
+  line-height: 1.6;
+}
+
+.result-detail-text + .result-detail-text {
+  margin-top: 10px;
+}
+
+/* 多篇 */
+.multi-result-hero {
+  text-align: center;
+  padding: 8px 0 16px;
+}
+
+.multi-result-hero .big-num {
+  font-size: 2.25rem;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.multi-result-hero .big-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.multi-track {
+  height: 10px;
+  border-radius: 5px;
+  background: #e7e5e4;
+  margin: 12px 0 16px;
+  overflow: hidden;
+}
+
+.multi-track > i {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+  background: #57534e;
+}
+
+.multi-conflicts {
+  margin: 0;
+  padding-left: 1.1em;
+  font-size: 0.88rem;
+  color: #44403c;
+  line-height: 1.65;
+}
+
+.multi-conclusion {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: #292524;
+}
+
+.multi-radar-svg-wrap {
+  max-width: 220px;
+  margin: 8px auto 12px;
+}
+
+.multi-suggest-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.multi-suggest-list li {
+  padding: 8px 0;
+  font-size: 0.88rem;
+  color: #44403c;
+  border-bottom: 1px solid var(--border);
+  transition: color 0.2s ease;
+}
+
+.multi-suggest-list li:last-child {
+  border-bottom: none;
+}
+
+.multi-suggest-list li:hover {
+  color: var(--text-hover);
+}
