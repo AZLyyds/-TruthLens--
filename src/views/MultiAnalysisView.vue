@@ -295,6 +295,21 @@ const runCompare = async () => {
               filter="url(#multiRadarGlow)"
               class="multi-radar-fill-poly"
             />
+            <circle
+              v-for="(meta, idx) in radarMeta"
+              :key="`pt-${meta.key}`"
+              :cx="100 + ((animatedRadar[idx] || 0) / 100) * 72 * Math.cos(-Math.PI / 2 + (idx * Math.PI) / 2)"
+              :cy="100 + ((animatedRadar[idx] || 0) / 100) * 72 * Math.sin(-Math.PI / 2 + (idx * Math.PI) / 2)"
+              r="3.3"
+              fill="#b91c1c"
+              stroke="#fff"
+              stroke-width="1.4"
+            />
+            <circle cx="100" cy="100" r="16" fill="rgba(255,255,255,0.92)" stroke="#fecaca" stroke-width="1.1" />
+            <text x="100" y="96" text-anchor="middle" font-size="8" fill="#7f1d1d" font-weight="700">综合</text>
+            <text x="100" y="106" text-anchor="middle" font-size="9.5" fill="#b91c1c" font-weight="800">
+              {{ Math.round(output?.consistencyScore || 0) }}
+            </text>
           </svg>
           <div
             v-for="(meta, idx) in radarMeta"

@@ -741,8 +741,8 @@ onMounted(async () => {
 }
 
 .risk-tag.low {
-  color: #1f2937;
-  background: #f3f4f6;
+  color: #15803d;
+  background: #dcfce7;
 }
 
 .risk-tag.mid {

@@ -18,6 +18,8 @@ const render = () => {
     d.emotionManipulation ?? 0,
     d.propagationMisleading ?? 0,
   ]
+  const benchmark = [65, 65, 65, 65]
+  const avg = Math.round(values.reduce((a, b) => a + b, 0) / 4)
   chart.setOption({
     animationDuration: 900,
     animationEasing: 'cubicOut',
@@ -36,17 +38,21 @@ const render = () => {
     legend: {
       orient: 'horizontal',
       bottom: 0,
-      data: ['风险维度'],
-      textStyle: { color: '#57534e', fontSize: 12 },
+      data: ['当前评估', '参考基线'],
+      textStyle: { color: '#57534e', fontSize: 12, fontWeight: 600 },
     },
     radar: {
       center: ['50%', '46%'],
       radius: '58%',
-      splitNumber: 4,
-      axisName: { color: '#57534e', fontSize: 12, fontWeight: 500 },
+      splitNumber: 5,
+      axisName: {
+        color: '#57534e',
+        fontSize: 12,
+        fontWeight: 600,
+      },
       splitLine: { lineStyle: { color: '#e7e5e4' } },
       splitArea: {
-        areaStyle: { color: ['rgba(254,242,242,0.95)', 'rgba(254,202,202,0.55)', 'rgba(252,165,165,0.4)', 'rgba(248,113,113,0.25)'] },
+        areaStyle: { color: ['rgba(255,255,255,0.96)', 'rgba(254,242,242,0.9)', 'rgba(254,226,226,0.72)', 'rgba(252,165,165,0.38)', 'rgba(248,113,113,0.2)'] },
       },
       axisLine: { lineStyle: { color: '#e7e5e4' } },
       indicator: [
@@ -63,12 +69,41 @@ const render = () => {
         data: [
           {
             value: values,
-            name: '风险维度',
+            name: '当前评估',
             areaStyle: { color: 'rgba(185, 28, 28, 0.16)' },
-            lineStyle: { color: '#b91c1c', width: 2.5 },
+            lineStyle: { color: '#b91c1c', width: 2.8 },
             itemStyle: { color: '#b91c1c', borderWidth: 2, borderColor: '#fff' },
+            symbol: 'circle',
+            symbolSize: 6,
+          },
+          {
+            value: benchmark,
+            name: '参考基线',
+            areaStyle: { color: 'transparent' },
+            lineStyle: { color: '#78716c', width: 1.4, type: 'dashed' },
+            itemStyle: { color: '#78716c' },
+            symbol: 'none',
           },
         ],
+      },
+      {
+        type: 'scatter',
+        coordinateSystem: 'radar',
+        data: [[avg, avg, avg, avg]],
+        symbolSize: 0,
+        label: {
+          show: true,
+          formatter: `综合均值 ${avg}`,
+          color: '#7f1d1d',
+          fontSize: 12,
+          fontWeight: 700,
+          backgroundColor: 'rgba(254,242,242,0.9)',
+          borderColor: 'rgba(185,28,28,0.35)',
+          borderWidth: 1,
+          borderRadius: 8,
+          padding: [4, 8],
+          offset: [0, -82],
+        },
       },
     ],
   })
