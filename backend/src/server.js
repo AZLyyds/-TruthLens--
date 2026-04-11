@@ -1018,6 +1018,7 @@ app.get('/api/v1/news/:id', async (req, res, next) => {
       content,
       source_name AS source,
       url,
+      image_url AS imageUrl,
       language,
       country,
       published_at AS publishedAt
@@ -1097,6 +1098,12 @@ app.get('/api/v1/news/:id', async (req, res, next) => {
     summary,
     source: wf.source != null && String(wf.source).trim() ? String(wf.source).trim() : row.source,
     url: wf.url != null && String(wf.url).trim() ? String(wf.url).trim() : row.url,
+    image:
+      wf.image != null && String(wf.image).trim()
+        ? String(wf.image).trim().slice(0, 2048)
+        : row.imageUrl != null && String(row.imageUrl).trim()
+          ? String(row.imageUrl).trim()
+          : null,
     content: wf.content ?? wf.body ?? wf.article ?? row.content,
     contentCN: wf.contentCN ?? wf.content_cn ?? null,
     description: row.description,
@@ -1751,6 +1758,364 @@ app.get('/api/v1/dashboard/alerts', async (_req, res) => {
   res.json(success({ items: rows }))
 })
 
+/** 大屏专用：聚合多图表所需数据，字段随库表演进保持宽松 */
+app.get('/api/v1/dashboard/screen', async (_req, res) => {
+  try {
+    const [todayRows] = await pool.execute('SELECT COUNT(*) AS todayCollected FROM news WHERE DATE(created_at) = CURDATE()')
+    const [analyzedTodayRows] = await pool.execute(
+      'SELECT COUNT(*) AS todayAnalyzed FROM analysis_records WHERE DATE(created_at) = CURDATE()',
+    )
+    const [avgFakeRows] = await pool.execute(
+      `SELECT AVG(fake_score) AS avgFake FROM analysis_records WHERE analysis_type = 'single'`,
+    )
+    const [chinaHighRows] = await pool.execute(
+      `
+      SELECT COUNT(DISTINCT n.id) AS chinaHighRisk
+      FROM news n
+      INNER JOIN analysis_records ar
+        ON ar.id = (
+          SELECT id FROM analysis_records
+          WHERE news_id = n.id AND analysis_type = 'single'
+          ORDER BY created_at DESC LIMIT 1
+        )
+      WHERE ar.risk_level = '高风险'
+        AND (
+          LOWER(IFNULL(n.title,'')) LIKE '%china%'
+          OR LOWER(IFNULL(n.title,'')) LIKE '%chinese%'
+          OR LOWER(IFNULL(n.title,'')) LIKE '%beijing%'
+          OR LOWER(IFNULL(n.title,'')) LIKE '%shanghai%'
+          OR LOWER(IFNULL(n.title,'')) LIKE '%taiwan%'
+          OR LOWER(IFNULL(n.title,'')) LIKE '%hong kong%'
+          OR IFNULL(n.title,'') LIKE '%涉华%'
+          OR IFNULL(n.title,'') LIKE '%对华%'
+          OR LOWER(IFNULL(n.description,'')) LIKE '%china%'
+        )
+      `,
+    )
+    const [highRiskAllRows] = await pool.execute(
+      `
+      SELECT COUNT(*) AS highRiskCount
+      FROM news n
+      LEFT JOIN analysis_records ar
+        ON ar.id = (
+          SELECT id FROM analysis_records
+          WHERE news_id = n.id AND analysis_type = 'single'
+          ORDER BY created_at DESC LIMIT 1
+        )
+      WHERE ar.risk_level = '高风险'
+      `,
+    )
+
+    const [trend7] = await pool.execute(
+      `
+      SELECT
+        DATE_FORMAT(created_at, '%Y-%m-%d') AS day,
+        COUNT(*) AS analyzed,
+        SUM(CASE WHEN risk_level = '高风险' THEN 1 ELSE 0 END) AS highRisk
+      FROM analysis_records
+      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+      GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
+      ORDER BY day ASC
+      `,
+    )
+
+    const [riskPie] = await pool.execute(
+      `
+      SELECT risk_level AS name, COUNT(*) AS value
+      FROM analysis_records
+      WHERE analysis_type = 'single'
+      GROUP BY risk_level
+      `,
+    )
+
+    const [mediaTop] = await pool.execute(
+      `
+      SELECT source_name AS media, ROUND(100 - AVG(fake_score), 2) AS credibility
+      FROM analysis_records ar
+      LEFT JOIN news n ON ar.news_id = n.id
+      WHERE source_name IS NOT NULL AND source_name != ''
+      GROUP BY source_name
+      ORDER BY credibility DESC
+      LIMIT 10
+      `,
+    )
+
+    const [countryRows] = await pool.execute(
+      `
+      SELECT
+        n.country AS country,
+        COUNT(*) AS newsCount,
+        ROUND(AVG(ar.fake_score), 2) AS avgFakeScore
+      FROM news n
+      LEFT JOIN analysis_records ar
+        ON ar.id = (
+          SELECT id FROM analysis_records
+          WHERE news_id = n.id AND analysis_type = 'single'
+          ORDER BY created_at DESC LIMIT 1
+        )
+      WHERE n.country IS NOT NULL AND TRIM(n.country) != ''
+      GROUP BY n.country
+      ORDER BY newsCount DESC
+      LIMIT 80
+      `,
+    )
+
+    const [titleRows] = await pool.execute(
+      `SELECT title FROM news ORDER BY COALESCE(published_at, created_at) DESC, id DESC LIMIT 120`,
+    )
+
+    const [multiRows] = await pool.execute(
+      `SELECT output_json AS outputJson FROM analysis_records WHERE analysis_type = 'multi' ORDER BY id DESC LIMIT 400`,
+    )
+
+    const [alertScroll] = await pool.execute(
+      `
+      SELECT id, title, risk_level AS riskLevel, source_name AS source, score, created_at AS createdAt
+      FROM alerts
+      ORDER BY id DESC
+      LIMIT 40
+      `,
+    )
+
+    const [spreadRows] = await pool.execute(
+      `
+      SELECT source_name AS source, COUNT(*) AS cnt
+      FROM news
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+        AND source_name IS NOT NULL AND TRIM(source_name) != ''
+      GROUP BY source_name
+      ORDER BY cnt DESC
+      LIMIT 12
+      `,
+    )
+
+    const [high30] = await pool.execute(
+      `
+      SELECT DATE_FORMAT(created_at, '%Y-%m-%d') AS day, COUNT(*) AS cnt
+      FROM alerts
+      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
+      GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
+      ORDER BY day ASC
+      `,
+    )
+
+    // 右侧“海外新闻实时流 / 高风险预警”使用：返回可跳转到详情页的 newsId
+    const [latestNewsRows] = await pool.execute(
+      `
+      SELECT
+        n.id AS id,
+        n.title AS title,
+        n.source_name AS source,
+        n.country AS country,
+        n.published_at AS publishedAt,
+        ar.risk_level AS riskLevel,
+        ar.fake_score AS fakeScore,
+        ar.created_at AS analyzedAt
+      FROM news n
+      LEFT JOIN analysis_records ar
+        ON ar.id = (
+          SELECT id
+          FROM analysis_records
+          WHERE news_id = n.id AND analysis_type = 'single'
+          ORDER BY created_at DESC
+          LIMIT 1
+        )
+      ORDER BY COALESCE(n.published_at, n.created_at) DESC, n.id DESC
+      LIMIT 40
+      `,
+    )
+
+    const [highRiskNewsRows] = await pool.execute(
+      `
+      SELECT
+        n.id AS id,
+        n.title AS title,
+        n.source_name AS source,
+        n.country AS country,
+        n.published_at AS publishedAt,
+        ar.risk_level AS riskLevel,
+        ar.fake_score AS fakeScore,
+        ar.created_at AS analyzedAt
+      FROM news n
+      INNER JOIN analysis_records ar
+        ON ar.id = (
+          SELECT id
+          FROM analysis_records
+          WHERE news_id = n.id AND analysis_type = 'single'
+          ORDER BY created_at DESC
+          LIMIT 1
+        )
+      WHERE ar.risk_level = '高风险'
+      ORDER BY ar.created_at DESC
+      LIMIT 30
+      `,
+    )
+
+    const todayCollected = Number(todayRows[0]?.todayCollected || 0)
+    const todayAnalyzed = Number(analyzedTodayRows[0]?.todayAnalyzed || 0)
+    const avgFake = Number(avgFakeRows[0]?.avgFake)
+    const avgCredibility = Number.isFinite(avgFake) ? Number((100 - avgFake).toFixed(2)) : null
+    const chinaHighRisk = Number(chinaHighRows[0]?.chinaHighRisk || 0)
+    const highRiskCount = Number(highRiskAllRows[0]?.highRiskCount || 0)
+
+    const freq = new Map()
+    const stop = new Set([
+      'the',
+      'and',
+      'for',
+      'with',
+      'that',
+      'this',
+      'from',
+      'have',
+      'has',
+      'are',
+      'was',
+      'were',
+      'news',
+      'said',
+      'the',
+      'will',
+      'can',
+      'not',
+    ])
+    for (const row of titleRows) {
+      const t = String(row.title || '')
+      const parts = t.split(/[\s\u3000\-_/,:;，。！？「」《》"'()[\]{}]+/).filter(Boolean)
+      for (let p of parts) {
+        p = p.trim()
+        if (p.length < 2) continue
+        if (/^[\d.]+$/.test(p)) continue
+        if (stop.has(p.toLowerCase())) continue
+        freq.set(p, (freq.get(p) || 0) + 1)
+      }
+    }
+    const keywords = [...freq.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 48)
+      .map(([text, weight]) => ({ text, weight }))
+
+    const consistencyBuckets = [
+      { name: '0-25', value: 0 },
+      { name: '26-50', value: 0 },
+      { name: '51-75', value: 0 },
+      { name: '76-100', value: 0 },
+    ]
+    for (const row of multiRows) {
+      let o = row.outputJson
+      if (Buffer.isBuffer(o)) o = o.toString('utf8')
+      if (typeof o === 'string') {
+        try {
+          o = JSON.parse(o)
+        } catch {
+          o = null
+        }
+      }
+      let score = null
+      if (o && typeof o === 'object') {
+        const c = o.consistencyScore ?? o.consistency_score
+        if (typeof c === 'number' && !Number.isNaN(c)) score = c
+      }
+      if (score == null) continue
+      const idx = Math.min(3, Math.max(0, Math.floor(score / 25)))
+      consistencyBuckets[idx].value += 1
+    }
+    if (!consistencyBuckets.some((b) => b.value > 0)) {
+      const [fb] = await pool.execute(
+        `SELECT fake_score FROM analysis_records WHERE analysis_type = 'multi' ORDER BY id DESC LIMIT 120`,
+      )
+      for (const r of fb) {
+        const fs = Number(r.fake_score)
+        if (Number.isNaN(fs)) continue
+        const pseudo = Math.max(0, Math.min(100, 100 - fs))
+        const idx = Math.min(3, Math.max(0, Math.floor(pseudo / 25)))
+        consistencyBuckets[idx].value += 1
+      }
+    }
+
+    const countryRisk = (countryRows || []).map((r) => {
+      const newsCount = Number(r.newsCount || 0)
+      const avgFs = r.avgFakeScore != null ? Number(r.avgFakeScore) : null
+      const riskIntensity = Number.isFinite(avgFs) ? Number(avgFs.toFixed(2)) : Math.min(100, newsCount * 3)
+      return {
+        country: String(r.country || '').trim(),
+        newsCount,
+        avgFakeScore: avgFs,
+        riskIntensity,
+      }
+    })
+
+    res.json(
+      success({
+        updatedAt: new Date().toISOString(),
+        kpis: {
+          todayCollected,
+          todayAnalyzed,
+          chinaHighRisk,
+          highRiskTotal: highRiskCount,
+          avgFakeScore: Number.isFinite(avgFake) ? Number(avgFake.toFixed(2)) : null,
+          avgCredibilityScore: avgCredibility,
+        },
+        riskTrend7d: (trend7 || []).map((x) => ({
+          day: x.day,
+          analyzed: Number(x.analyzed || 0),
+          highRisk: Number(x.highRisk || 0),
+        })),
+        riskDistribution: (riskPie || []).map((x) => ({
+          name: String(x.name || '—'),
+          value: Number(x.value || 0),
+        })),
+        mediaTop10: (mediaTop || []).map((x) => ({
+          media: String(x.media || ''),
+          credibility: Number(x.credibility || 0),
+        })),
+        countryRisk,
+        keywords,
+        multiConsistencyBuckets: consistencyBuckets,
+        alerts: (alertScroll || []).map((x) => ({
+          id: x.id,
+          title: String(x.title || ''),
+          riskLevel: String(x.riskLevel || ''),
+          source: x.source != null ? String(x.source) : '',
+          score: x.score != null ? Number(x.score) : null,
+          createdAt: x.createdAt,
+        })),
+        latestNews: (latestNewsRows || []).map((x) => ({
+          id: x.id,
+          title: String(x.title || ''),
+          source: x.source != null ? String(x.source) : '',
+          country: x.country != null ? String(x.country) : '',
+          publishedAt: x.publishedAt,
+          riskLevel: x.riskLevel != null ? String(x.riskLevel) : null,
+          fakeScore: x.fakeScore != null ? Number(x.fakeScore) : null,
+          analyzedAt: x.analyzedAt,
+        })),
+        highRiskNews: (highRiskNewsRows || []).map((x) => ({
+          id: x.id,
+          title: String(x.title || ''),
+          source: x.source != null ? String(x.source) : '',
+          country: x.country != null ? String(x.country) : '',
+          publishedAt: x.publishedAt,
+          riskLevel: x.riskLevel != null ? String(x.riskLevel) : null,
+          fakeScore: x.fakeScore != null ? Number(x.fakeScore) : null,
+          analyzedAt: x.analyzedAt,
+        })),
+        globalSpreadBySource: (spreadRows || []).map((x) => ({
+          source: String(x.source || ''),
+          count: Number(x.cnt || 0),
+        })),
+        highRiskAlerts30d: (high30 || []).map((x) => ({
+          day: x.day,
+          count: Number(x.cnt || 0),
+        })),
+      }),
+    )
+  } catch (error) {
+    console.error('GET /api/v1/dashboard/screen failed:', error?.stack || error?.message || error)
+    res.status(500).json(fail(error?.message || 'screen bundle failed', 500, 'INTERNAL_ERROR'))
+  }
+})
+
 app.get('/api/v1/alerts', async (_req, res) => {
   const [rows] = await pool.execute(
     'SELECT id, title, risk_level AS riskLevel, source_name AS source, score, created_at AS createdAt FROM alerts ORDER BY id DESC LIMIT 30',
@@ -2195,6 +2560,14 @@ function workflowUniqueDbUrl(canonicalUrl, runSalt, itemIndex) {
   return `${base}#tlwf-${tag}`
 }
 
+function pickWorkflowImageUrl(item) {
+  const v = item?.image ?? item?.imageUrl ?? item?.image_url
+  if (v == null) return null
+  const s = String(v).trim()
+  if (!s) return null
+  return s.length > 2048 ? s.slice(0, 2048) : s
+}
+
 async function upsertNewsFromWorkflowItem(item, workflowOpts = null) {
   const title = String(item?.titleCN || item?.title_cn || item?.title || item?.newsTitle || '').trim()
   const content = item?.content || item?.body || item?.article || ''
@@ -2203,6 +2576,7 @@ async function upsertNewsFromWorkflowItem(item, workflowOpts = null) {
   const canonicalUrl = item?.url || item?.link || item?.source_url || null
   const language = item?.language || item?.lang || 'unknown'
   const publishedAt = item?.published_at || item?.publishedAt || item?.time || null
+  const imageUrl = pickWorkflowImageUrl(item)
 
   let newsUid
   let storageUrl = canonicalUrl
@@ -2228,8 +2602,8 @@ async function upsertNewsFromWorkflowItem(item, workflowOpts = null) {
   await pool.execute(
     `
       INSERT INTO news (
-        news_uid, title, description, content, source_name, url, language, published_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        news_uid, title, description, content, source_name, url, language, published_at, image_url
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         title = COALESCE(VALUES(title), title),
         description = COALESCE(VALUES(description), description),
@@ -2237,7 +2611,8 @@ async function upsertNewsFromWorkflowItem(item, workflowOpts = null) {
         source_name = COALESCE(VALUES(source_name), source_name),
         url = COALESCE(VALUES(url), url),
         language = COALESCE(VALUES(language), language),
-        published_at = COALESCE(VALUES(published_at), published_at)
+        published_at = COALESCE(VALUES(published_at), published_at),
+        image_url = COALESCE(VALUES(image_url), image_url)
     `,
     [
       newsUid,
@@ -2248,6 +2623,7 @@ async function upsertNewsFromWorkflowItem(item, workflowOpts = null) {
       storageUrl,
       language,
       toMysqlDateTime(publishedAt),
+      imageUrl,
     ],
   )
 

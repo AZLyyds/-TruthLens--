@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS news (
   language VARCHAR(16) NULL DEFAULT 'unknown',
   country VARCHAR(16) NULL DEFAULT 'global',
   published_at DATETIME NULL,
+  image_url VARCHAR(2048) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_news_published_at (published_at),
   INDEX idx_news_source_name (source_name)

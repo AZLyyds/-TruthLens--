@@ -15,9 +15,10 @@ const related = ref([])
 const relatedStart = ref(0)
 const relatedPageSize = ref(3)
 const fontStep = ref(1)
-const favorited = ref(false)
-
-const FAV_KEY = 'truthlens_news_favorites'
+/** 原文图 URL 加载失败（如海外 CDN 不可达）时改用与门户大屏一致的 picsum 占位 */
+const heroImageFallback = ref(false)
+/** 浏览器书签引导层（网页无法代用户按出收藏夹，仅可提示快捷键 / 复制链接） */
+const bookmarkGuideOpen = ref(false)
 
 function asDate(value) {
   if (!value) return null
@@ -39,28 +40,45 @@ function riskBand(level) {
   return 'low'
 }
 
-function readFav(id) {
-  try {
-    const raw = JSON.parse(localStorage.getItem(FAV_KEY) || '[]')
-    favorited.value = Array.isArray(raw) && raw.includes(String(id))
-  } catch {
-    favorited.value = false
-  }
+function bookmarkPageTitle() {
+  const t = detail.value?.title
+  if (t && String(t).trim()) return `${String(t).trim()} · TruthLens`
+  return document.title || 'TruthLens'
 }
 
-function onToggleFavorite() {
-  const id = String(route.params.id)
-  let raw = []
+/** 仅旧版 IE 等环境可能生效；Chrome / Edge / Firefox 会返回 false */
+function tryLegacyAddFavorite() {
   try {
-    raw = JSON.parse(localStorage.getItem(FAV_KEY) || '[]')
+    const url = window.location.href
+    const title = bookmarkPageTitle()
+    const ext = window.external
+    if (ext && typeof ext.AddFavorite === 'function') {
+      ext.AddFavorite(url, title)
+      return true
+    }
   } catch {
-    raw = []
+    /* noop */
   }
-  const set = new Set((Array.isArray(raw) ? raw : []).map(String))
-  if (set.has(id)) set.delete(id)
-  else set.add(id)
-  localStorage.setItem(FAV_KEY, JSON.stringify([...set]))
-  favorited.value = set.has(id)
+  return false
+}
+
+function closeBookmarkGuide() {
+  bookmarkGuideOpen.value = false
+}
+
+function onBookmarkClick() {
+  if (tryLegacyAddFavorite()) return
+  bookmarkGuideOpen.value = true
+}
+
+async function copyCurrentPageUrl() {
+  const url = window.location.href
+  try {
+    await navigator.clipboard.writeText(url)
+    window.alert('链接已复制，可在浏览器书签栏或书签管理器中新建书签并粘贴地址')
+  } catch {
+    window.alert('复制失败，请手动复制地址栏中的链接')
+  }
 }
 
 const bodyFontPx = computed(() => {
@@ -121,6 +139,35 @@ const ms = computed(() => {
   }
 })
 
+const primaryHeroImageUrl = computed(() => {
+  const u = detail.value?.image
+  if (u == null || !String(u).trim()) return ''
+  return String(u).trim()
+})
+
+/** 与 NewsPortalScreenView 一致：picsum 按新闻 id 固定 seed，避免每次刷新变图 */
+function picsumPlaceholder(seedSuffix, w, h) {
+  return `https://picsum.photos/seed/${seedSuffix}/${w}/${h}`
+}
+
+const heroImageSrc = computed(() => {
+  if (!detail.value?.id) return ''
+  const id = detail.value.id
+  const placeholder = picsumPlaceholder(`truthlens-nd-${id}`, 800, 520)
+  if (!primaryHeroImageUrl.value || heroImageFallback.value) return placeholder
+  return primaryHeroImageUrl.value
+})
+
+function onHeroImageError() {
+  if (!primaryHeroImageUrl.value) return
+  if (heroImageFallback.value) return
+  heroImageFallback.value = true
+}
+
+const heroImageIsPlaceholder = computed(
+  () => !primaryHeroImageUrl.value || heroImageFallback.value,
+)
+
 async function loadRelated(current) {
   try {
     const list = await fetchNewsList({ page: 1, pageSize: 120 })
@@ -143,8 +190,8 @@ async function loadDetail() {
   loading.value = true
   error.value = ''
   detail.value = null
+  heroImageFallback.value = false
   const id = route.params.id
-  readFav(id)
   try {
     const data = await fetchNewsDetail(id)
     detail.value = data
@@ -156,12 +203,27 @@ async function loadDetail() {
   }
 }
 
+/** 与列表页跳转时 query.from 一致，仅允许白名单，避免开放重定向 */
+const DETAIL_BACK = {
+  portal: { name: 'portal' },
+  'portal-screen': { name: 'portal-screen' },
+  dashboard: { name: 'dashboard' },
+}
+
 function goBack() {
+  const key = String(route.query.from || '')
+  const target = DETAIL_BACK[key]
+  if (target) {
+    router.push(target)
+    return
+  }
   router.push({ name: 'portal' })
 }
 
 function goRelated(item) {
-  router.push({ name: 'news-detail', params: { id: String(item.id) } })
+  const key = String(route.query.from || '')
+  const query = DETAIL_BACK[key] ? { from: key } : {}
+  router.push({ name: 'news-detail', params: { id: String(item.id) }, query })
 }
 
 function updateRelatedPageSize() {
@@ -250,6 +312,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateRelatedPageSize)
+  window.removeEventListener('keydown', onEscapeCloseBookmark)
 })
 
 watch(
@@ -259,18 +322,56 @@ watch(
     if (relatedStart.value > maxStart) relatedStart.value = maxStart
   },
 )
+
+function onEscapeCloseBookmark(e) {
+  if (e.key === 'Escape' && bookmarkGuideOpen.value) {
+    closeBookmarkGuide()
+  }
+}
+
+watch(bookmarkGuideOpen, (open) => {
+  if (open) window.addEventListener('keydown', onEscapeCloseBookmark)
+  else window.removeEventListener('keydown', onEscapeCloseBookmark)
+})
 </script>
 
 <template>
   <div class="nd">
     <NewsDetailToolbar
-      :favorited="favorited"
       :disabled-share="!detail"
       @back="goBack"
-      @favorite="onToggleFavorite"
+      @bookmark="onBookmarkClick"
       @share="onShare"
       @export="onExportJson"
     />
+
+    <Teleport to="body">
+      <div
+        v-if="bookmarkGuideOpen"
+        class="nd-bm-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="nd-bm-title"
+        @click.self="closeBookmarkGuide"
+      >
+        <div class="nd-bm-card card" @click.stop>
+          <button type="button" class="nd-bm-close" aria-label="关闭" @click="closeBookmarkGuide">×</button>
+          <h2 id="nd-bm-title" class="nd-bm-title">加入浏览器书签</h2>
+          <p class="nd-bm-lead">
+            出于安全策略，网页不能代替您按下「添加书签」，请使用系统快捷键（与在任意网页收藏相同）：
+          </p>
+          <ul class="nd-bm-shortcuts">
+            <li><span class="nd-bm-kbd">Windows / Linux</span> <kbd>Ctrl</kbd> + <kbd>D</kbd></li>
+            <li><span class="nd-bm-kbd">macOS</span> <kbd>⌘</kbd> + <kbd>D</kbd></li>
+          </ul>
+          <p class="nd-bm-tip">手机浏览器：通常可通过分享菜单或地址栏旁的「☆ / 书签」入口保存本页。</p>
+          <div class="nd-bm-actions">
+            <button type="button" class="nd-bm-btn nd-bm-btn--primary" @click="copyCurrentPageUrl">复制本页链接</button>
+            <button type="button" class="nd-bm-btn" @click="closeBookmarkGuide">知道了</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <div class="nd-inner">
       <NewsDetailSkeleton v-if="loading" />
@@ -344,9 +445,22 @@ watch(
                   </div>
                 </div>
                 <div class="nd-body-col nd-body-col--img">
-                  <span class="nd-body-label">原文插图（预留位置）</span>
-                  <div class="nd-image-slot">
-                    <span>预留插图区域（后端接入后显示原文图片）</span>
+                  <span class="nd-body-label">原文插图</span>
+                  <div
+                    class="nd-image-slot"
+                    :class="{ 'nd-image-slot--placeholder': heroImageIsPlaceholder }"
+                  >
+                    <img
+                      class="nd-hero-img"
+                      :src="heroImageSrc"
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      @error="onHeroImageError"
+                    />
+                    <p v-if="heroImageIsPlaceholder && primaryHeroImageUrl" class="nd-image-hint">
+                      原图链接在当前网络下无法加载，已显示预览占位图
+                    </p>
                   </div>
                 </div>
               </div>
@@ -1176,17 +1290,40 @@ watch(
 }
 
 .nd-image-slot {
-  border: 1px dashed #d6d3d1;
+  border: 1px solid #e2e8f0;
   border-radius: 12px;
-  background: linear-gradient(180deg, #ffffff, #fafaf9);
+  background: #f8fafc;
   min-height: 220px;
+  overflow: hidden;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 18px;
-  text-align: center;
-  color: #78716c;
-  font-size: 14px;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0;
+}
+
+.nd-image-slot--placeholder {
+  border-style: dashed;
+  border-color: #d6d3d1;
+}
+
+.nd-hero-img {
+  width: 100%;
+  min-height: 220px;
+  max-height: 420px;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+  background: #e2e8f0;
+}
+
+.nd-image-hint {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #64748b;
+  background: #f1f5f9;
+  border-top: 1px solid #e2e8f0;
 }
 
 .nd-body-label {
@@ -1432,5 +1569,135 @@ watch(
   .nd-rel-track {
     grid-template-columns: 1fr;
   }
+}
+
+/* —— 浏览器书签引导（Teleport 到 body，需全局层级） */
+.nd-bm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(6px);
+}
+
+.nd-bm-card {
+  position: relative;
+  max-width: 420px;
+  width: 100%;
+  padding: 22px 22px 18px;
+  border-radius: 16px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.18);
+}
+
+.nd-bm-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #64748b;
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.nd-bm-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.nd-bm-title {
+  margin: 0 28px 12px 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.nd-bm-lead {
+  margin: 0 0 12px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #475569;
+}
+
+.nd-bm-shortcuts {
+  margin: 0 0 12px;
+  padding-left: 1.1rem;
+  font-size: 14px;
+  line-height: 1.85;
+  color: #334155;
+}
+
+.nd-bm-shortcuts li {
+  margin-bottom: 4px;
+}
+
+.nd-bm-kbd {
+  display: inline-block;
+  min-width: 118px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.nd-bm-shortcuts kbd {
+  display: inline-block;
+  padding: 2px 8px;
+  margin: 0 2px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: linear-gradient(180deg, #f8fafc, #f1f5f9);
+  box-shadow: 0 1px 0 #e2e8f0;
+}
+
+.nd-bm-tip {
+  margin: 0 0 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #94a3b8;
+}
+
+.nd-bm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.nd-bm-btn {
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+}
+
+.nd-bm-btn:hover {
+  background: #f1f5f9;
+}
+
+.nd-bm-btn--primary {
+  border-color: #fecaca;
+  background: linear-gradient(135deg, #b91c1c, #f87171);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(185, 28, 28, 0.22);
+}
+
+.nd-bm-btn--primary:hover {
+  filter: brightness(1.05);
 }
 </style>

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { analyzeMulti } from '../api/analysis'
+import { renderAiMarkdown } from '../utils/aiMarkdown.js'
 
 const router = useRouter()
 const inputItems = ref(['', ''])
@@ -20,7 +21,7 @@ const multiSummaryDisplay = computed(() => {
   if (!o) return ''
   const deep = o.deepAnalysis || {}
   const raw = String(o.detailedReport || '').trim()
-  if (raw.length >= 120) return raw
+  if (raw.length >= 80) return raw
   const conflicts = Array.isArray(deep.factDifferences) ? deep.factDifferences.filter(Boolean) : []
   return [
     conflicts.length ? `关键分歧集中在：${conflicts.slice(0, 2).join('；')}。` : '',
@@ -32,6 +33,8 @@ const multiSummaryDisplay = computed(() => {
     .filter(Boolean)
     .join('')
 })
+
+const multiSummaryHtml = computed(() => renderAiMarkdown(multiSummaryDisplay.value))
 
 const deepCoreFacts = computed(() => {
   const rows = output.value?.deepAnalysis?.coreFacts
@@ -241,6 +244,10 @@ const onExport = async () => {
           : ['建议回查原文并补齐关键细节后再传播'],
     },
     {
+      title: 'AI总结',
+      markdown: String(o?.detailedReport || '').trim() || '—',
+    },
+    {
       title: '输入文本',
       body: inputItems.value.map((t, i) => `来源 ${i + 1}：${String(t || '').trim() || '—'}`),
     },
@@ -279,21 +286,42 @@ const onExport = async () => {
   `
   root.appendChild(header)
 
+  const mdStyle = document.createElement('style')
+  mdStyle.textContent = `
+    .tl-md-export{font-size:13px;line-height:1.65;color:#1f2937;word-break:break-word;}
+    .tl-md-export h1{font-size:18px;margin:0 0 10px;color:#7f1d1d;font-weight:700;}
+    .tl-md-export h2{font-size:15px;margin:14px 0 8px;color:#991b1b;font-weight:700;}
+    .tl-md-export h3{font-size:14px;margin:10px 0 6px;color:#374151;font-weight:600;}
+    .tl-md-export p{margin:0 0 8px;}
+    .tl-md-export ul{margin:0 0 8px;padding-left:1.2rem;}
+    .tl-md-export li{margin:0 0 4px;}
+    .tl-md-export strong{color:#111827;}
+  `
+  root.appendChild(mdStyle)
+
   const sectionEls = []
   for (const s of sectionList) {
     const el = document.createElement('section')
     el.style.cssText = 'margin:0 0 10px;padding:10px 12px;border:1px solid #f1d0d0;border-radius:10px;background:#fffafa;'
-    el.innerHTML = `
-      <h2 style="margin:0 0 8px;font-size:16px;color:#7f1d1d;">${escapeHtml(s.title)}</h2>
-      ${s.body
-        .map(
-          (line) =>
-            `<p style="margin:0 0 6px;font-size:13px;white-space:pre-wrap;word-break:break-word;">${escapeHtml(
-              String(line),
-            )}</p>`,
-        )
-        .join('')}
-    `
+    if ('markdown' in s) {
+      const md = s.markdown === '—' ? escapeHtml('—') : renderAiMarkdown(s.markdown)
+      el.innerHTML = `
+        <h2 style="margin:0 0 8px;font-size:16px;color:#7f1d1d;">${escapeHtml(s.title)}</h2>
+        <div class="tl-md-export">${md}</div>
+      `
+    } else {
+      el.innerHTML = `
+        <h2 style="margin:0 0 8px;font-size:16px;color:#7f1d1d;">${escapeHtml(s.title)}</h2>
+        ${s.body
+          .map(
+            (line) =>
+              `<p style="margin:0 0 6px;font-size:13px;white-space:pre-wrap;word-break:break-word;">${escapeHtml(
+                String(line),
+              )}</p>`,
+          )
+          .join('')}
+      `
+    }
     root.appendChild(el)
     sectionEls.push(el)
   }
@@ -370,6 +398,11 @@ const runCompare = async () => {
         <div v-else-if="output" class="multi-output-inner multi-output-structured">
           <header class="multi-out-title">多源一致性分析结果</header>
 
+          <section class="multi-ai-summary multi-ai-summary--primary">
+            <span class="multi-label">AI总结</span>
+            <div class="multi-ai-summary-scroll markdown-body" v-html="multiSummaryHtml" />
+          </section>
+
           <section class="multi-ai-section">
             <h4>核心事实一致点</h4>
             <ul>
@@ -401,11 +434,6 @@ const runCompare = async () => {
             <ul>
               <li v-for="(line, idx) in deepActions" :key="`act-${idx}`">{{ line }}</li>
             </ul>
-          </section>
-
-          <section class="multi-ai-summary">
-            <span class="multi-label">AI总结</span>
-            <p>{{ multiSummaryDisplay }}</p>
           </section>
         </div>
         <div v-else class="multi-output-inner placeholder">填写两条输入后点击按钮，查看多源一致性结果。</div>
@@ -676,19 +704,79 @@ const runCompare = async () => {
 }
 
 .multi-ai-summary {
-  margin-top: 10px;
-  padding: 12px;
-  border: 1px solid #f1d0d0;
-  border-radius: 10px;
-  background: #fffafa;
+  margin-top: 0;
+  margin-bottom: 12px;
+  padding: 14px 14px 12px;
+  border: 1px solid #e7b4b4;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fff5f5 0%, #fffafa 100%);
+  box-shadow: 0 4px 14px rgba(185, 28, 28, 0.08);
 }
 
-.multi-ai-summary p {
-  margin: 6px 0 0;
-  font-size: 13.5px;
-  line-height: 1.72;
-  white-space: pre-wrap;
+.multi-ai-summary--primary .multi-label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #7f1d1d;
+}
+
+.multi-ai-summary-scroll {
+  margin-top: 10px;
+  max-height: min(62vh, 620px);
+  min-height: 240px;
+  overflow-y: auto;
+  padding-right: 6px;
+  font-size: 15px;
+  line-height: 1.75;
+  color: #1f2937;
+  scrollbar-width: thin;
+}
+
+.multi-ai-summary-scroll :deep(h1) {
+  margin: 0 0 10px;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #7f1d1d;
+  line-height: 1.35;
+}
+
+.multi-ai-summary-scroll :deep(h2) {
+  margin: 14px 0 8px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #991b1b;
+  line-height: 1.4;
+}
+
+.multi-ai-summary-scroll :deep(h3) {
+  margin: 10px 0 6px;
+  font-size: 0.98rem;
+  font-weight: 600;
   color: #374151;
+}
+
+.multi-ai-summary-scroll :deep(p) {
+  margin: 0 0 10px;
+}
+
+.multi-ai-summary-scroll :deep(ul),
+.multi-ai-summary-scroll :deep(ol) {
+  margin: 0 0 10px;
+  padding-left: 1.25rem;
+}
+
+.multi-ai-summary-scroll :deep(li) {
+  margin: 0 0 6px;
+}
+
+.multi-ai-summary-scroll :deep(strong) {
+  color: #111827;
+}
+
+.multi-ai-summary-scroll :deep(hr) {
+  border: none;
+  border-top: 1px solid #f1d0d0;
+  margin: 12px 0;
 }
 
 .analysis-extra.multi-extra {

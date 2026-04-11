@@ -1,9 +1,7 @@
 <script setup>
-defineEmits(['back', 'share', 'export', 'favorite'])
+defineEmits(['back', 'share', 'export', 'bookmark'])
 
 defineProps({
-  /** 是否已收藏（本地） */
-  favorited: { type: Boolean, default: false },
   disabledShare: { type: Boolean, default: false },
 })
 </script>
@@ -18,13 +16,12 @@ defineProps({
     <div class="bar-actions">
       <button
         type="button"
-        class="bar-icon-btn"
-        :class="{ 'is-on': favorited }"
-        :aria-pressed="favorited"
-        title="收藏到本地"
-        @click="$emit('favorite')"
+        class="bar-icon-btn bar-bookmark-btn"
+        title="加入浏览器书签（与按 Ctrl+D / ⌘D 相同）"
+        aria-label="加入浏览器书签"
+        @click="$emit('bookmark')"
       >
-        {{ favorited ? '★' : '☆' }}
+        <span class="bar-bookmark-glyph" aria-hidden="true">🔖</span>
       </button>
       <button
         type="button"
@@ -145,10 +142,9 @@ defineProps({
   cursor: not-allowed;
 }
 
-.bar-icon-btn.is-on {
-  color: #ca8a04;
-  border-color: #fcd34d;
-  background: #fffbeb;
+.bar-bookmark-btn .bar-bookmark-glyph {
+  font-size: 18px;
+  line-height: 1;
 }
 
 .bar-export {

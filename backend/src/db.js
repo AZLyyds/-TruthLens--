@@ -36,6 +36,7 @@ const schemaStatements = [
     language VARCHAR(16) NULL DEFAULT 'unknown',
     country VARCHAR(16) NULL DEFAULT 'global',
     published_at DATETIME NULL,
+    image_url VARCHAR(2048) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_news_published_at (published_at),
     INDEX idx_news_source_name (source_name)
@@ -134,11 +135,26 @@ export async function migrateNewsTableDropUnusedColumns(pool) {
     )
     if (!rows?.length) return
     const names = new Set(rows.map((r) => r.COLUMN_NAME))
-    const toDrop = ['author', 'image_url', 'raw_json'].filter((name) => names.has(name))
+    const toDrop = ['author', 'raw_json'].filter((name) => names.has(name))
     if (!toDrop.length) return
     await pool.query(`ALTER TABLE news ${toDrop.map((name) => `DROP COLUMN ${name}`).join(', ')}`)
   } catch (e) {
     console.warn('migrateNewsTableDropUnusedColumns:', e.message)
+  }
+}
+
+/** 工作流 newsAnalysis.image 落库字段；旧库无列时补齐 */
+export async function ensureNewsImageUrlColumn(pool) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'news'`,
+    )
+    if (!rows?.length) return
+    const names = new Set(rows.map((r) => r.COLUMN_NAME))
+    if (names.has('image_url')) return
+    await pool.query(`ALTER TABLE news ADD COLUMN image_url VARCHAR(2048) NULL`)
+  } catch (e) {
+    console.warn('ensureNewsImageUrlColumn:', e.message)
   }
 }
 
@@ -148,6 +164,7 @@ export async function initDatabase() {
   }
   await migrateQueryHistoryTable(pool)
   await migrateNewsTableDropUnusedColumns(pool)
+  await ensureNewsImageUrlColumn(pool)
 }
 
 export function getPool() {

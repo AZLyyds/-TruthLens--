@@ -4,6 +4,9 @@ const BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
 const CHAT_COMPLETIONS_PATH = '/chat/completions'
 const MODEL = 'qwen-turbo'
 const REQUEST_TIMEOUT = 10000
+/** 单篇/多篇深度 Markdown 报告：长文生成需要更长等待与更大输出上限 */
+const REQUEST_TIMEOUT_REPORT = 120000
+const REPORT_MAX_TOKENS = 8192
 const MAX_RETRIES = 1
 
 function getApiKey() {
@@ -80,9 +83,19 @@ const client = axios.create({
   timeout: REQUEST_TIMEOUT,
 })
 
-async function requestCompletion(messages) {
+async function requestCompletion(messages, options = {}) {
   const apiKey = getApiKey()
   if (!apiKey) return toFailure('DASHSCOPE_API_KEY 未配置')
+
+  const timeout = typeof options.timeout === 'number' ? options.timeout : REQUEST_TIMEOUT
+  const body = {
+    model: MODEL,
+    messages,
+    temperature: 0.2,
+  }
+  if (options.maxTokens != null) {
+    body.max_tokens = options.maxTokens
+  }
 
   let attempt = 0
   let lastError = null
@@ -91,16 +104,13 @@ async function requestCompletion(messages) {
     try {
       const response = await client.post(
         CHAT_COMPLETIONS_PATH,
-        {
-          model: MODEL,
-          messages,
-          temperature: 0.2,
-        },
+        body,
         {
           headers: {
             Authorization: `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
           },
+          timeout,
         },
       )
       const content = response?.data?.choices?.[0]?.message?.content
@@ -211,53 +221,67 @@ export async function generateDetailedSingleReport(payload) {
     const summary = String(payload?.summary || '').trim()
     const riskLevel = String(payload?.riskLevel || '').trim()
     const credibilityScore = Number(payload?.credibilityScore)
-    const reasons = Array.isArray(payload?.reasons) ? payload.reasons.slice(0, 4) : []
-    const suggestions = Array.isArray(payload?.suggestions) ? payload.suggestions.slice(0, 4) : []
-    const facts = Array.isArray(payload?.facts) ? payload.facts.slice(0, 3) : []
+    const reasons = Array.isArray(payload?.reasons) ? payload.reasons.slice(0, 8) : []
+    const suggestions = Array.isArray(payload?.suggestions) ? payload.suggestions.slice(0, 8) : []
+    const facts = Array.isArray(payload?.facts) ? payload.facts.slice(0, 10) : []
 
     if (!title && !summary) return toFailure('report payload 为空')
 
+    const credText = Number.isNaN(credibilityScore) ? '（无）' : String(credibilityScore)
+    const reportOpts = { timeout: REQUEST_TIMEOUT_REPORT, maxTokens: REPORT_MAX_TOKENS }
+
     const prompt =
-      `你是“涉华新闻核验分析师”。请基于输入信息写一段具体、实在的中文分析段落。\n` +
-      `要求：\n` +
-      `1) 仅输出一段纯文本，不要标题、不要分点、不要 JSON、不要 markdown。\n` +
-      `2) 目标约 240 字（允许 200-280 字）。\n` +
-      `3) 内容要“有细节”：至少包含 2 个可核验的信息点（来自事实片段/关键原因）。\n` +
-      `4) 必须明确写出“可信度X/100”和风险等级，不要改写该分值。\n` +
-      `5) 禁止空泛表达（如“值得关注”“建议进一步观察”这类套话），禁止编造输入里没有的事实。\n\n` +
+      `你是资深「涉华新闻核验分析师」，面向专业读者写**超长、超详细**的中文 Markdown 报告（不要 JSON、不要代码围栏、不要表格）。\n` +
+      `\n` +
+      `【篇幅硬性要求——必须遵守，不可省略】\n` +
+      `1) 统计方式：去掉 Markdown 符号（#、-、* 等）后，**正文纯汉字不少于 1100 字**；**理想区间 1300–2000 字**。宁可写长，不要写短。\n` +
+      `2) 禁止用几句 bullet 敷衍代替正文；每个二级标题下必须有**多段完整叙述**（每段不少于 80 字）。\n` +
+      `\n` +
+      `【结构硬性要求】\n` +
+      `1) 首行一级标题且仅一个：# 单篇核验报告\n` +
+      `2) **至少 6 个**二级标题（##），**不得合并删减到少于 6 个**。建议模块名（可微调措辞，但须覆盖同等信息量）：\n` +
+      `   ## 背景与议题界定\n` +
+      `   ## 核心事实与可核验要点\n` +
+      `   ## 叙事手法与潜在风险\n` +
+      `   ## 可信度 ${credText}/100 与风险等级「${riskLevel || '（无）'}」的逐项解读\n` +
+      `   ## 与事实片段、关键原因的对照分析\n` +
+      `   ## 传播与核查的可执行建议\n` +
+      `3) **每个 ## 下**必须包含：至少 **1 个**三级标题（###）作为子论点；至少 **3 条**无序列表（-），且每条列表不少于 25 字、须写清依据（来自输入中的哪条事实/原因/建议）。\n` +
+      `4) 正文中必须**显式写出**「风险等级：${riskLevel || '（无）'}」与「可信度 ${credText}/100」**各至少两次**（可在不同小节），数值与措辞不得改写。\n` +
+      `5) 禁止空泛套话与无信息量的过渡句；禁止编造输入中不存在的事实、人物、数据或信源。\n\n` +
       `输入信息：\n` +
       `标题：${title || '（无）'}\n` +
       `摘要：${summary || '（无）'}\n` +
       `风险等级：${riskLevel || '（无）'}\n` +
-      `可信度：${Number.isNaN(credibilityScore) ? '（无）' : credibilityScore}\n` +
+      `可信度：${credText}\n` +
       `关键原因：${reasons.length ? reasons.join('；') : '（无）'}\n` +
       `建议动作：${suggestions.length ? suggestions.join('；') : '（无）'}\n` +
-      `事实片段：${facts.length ? facts.map((f) => [f?.time, f?.subject, f?.event].filter(Boolean).join(' / ')).join('；') : '（无）'}`
+      `事实片段：${facts.length ? facts.map((f) => [f?.time, f?.subject, f?.event, f?.source].filter(Boolean).join(' / ')).join('；') : '（无）'}`
 
-    const normalizeText = (raw) =>
+    const normalizeMarkdown = (raw) =>
       String(raw || '')
-        .replace(/\s+/g, ' ')
+        .replace(/\r\n/g, '\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{4,}/g, '\n\n')
         .trim()
-    const effectiveLen = (s) => s.replace(/\s/g, '').length
 
-    // 第一轮：先产出信息充分的草稿
-    const completion1 = await requestCompletion([{ role: 'user', content: prompt }])
-    const draft = completion1.success ? normalizeText(completion1.data) : ''
+    const completion1 = await requestCompletion([{ role: 'user', content: prompt }], reportOpts)
+    const draft = completion1.success ? normalizeMarkdown(completion1.data) : ''
 
-    // 第二轮：固定执行润色扩写（按你的要求，明确双请求）
     const reprompt =
-      `请将下面草稿改写成 220-300 字的一整段中文分析，要求更具体、更可执行：\n` +
-      `硬性要求：\n` +
-      `1) 必须保留并明确写出“可信度 ${Number.isNaN(credibilityScore) ? '（无）' : credibilityScore}/100”与“风险等级${riskLevel || '（无）'}”。\n` +
-      `2) 至少包含两条可核验细节（时间/主体/事件/来源/关键原因）。\n` +
-      `3) 只输出一段正文，不要分点、不要标题、不要空话。\n` +
-      `4) 不得编造输入中不存在的事实。\n\n` +
-      `草稿：${draft || '（草稿为空，请基于给定信息直接生成）'}\n\n` +
+      `以下是一篇单篇核验 Markdown 草稿。你的任务是：在**不编造新事实**的前提下，**大幅扩写与深化**为终稿。\n` +
+      `\n` +
+      `【终稿篇幅——硬性】去掉 Markdown 符号后的纯汉字 **不少于 1300 字**；**理想 1500–2200 字**。\n` +
+      `【终稿结构——硬性】保留 # 单篇核验报告；**至少 6 个 ##**；每个 ## 下保留或补全 **### 子论点**、**多段叙述**与 **3 条以上**有实质内容的「-」列表。\n` +
+      `【必须复述】文中仍须**至少两处**明确写出「风险等级：${riskLevel || '（无）'}」与「可信度 ${credText}/100」。\n` +
+      `【禁止】变短、删节成摘要风格；禁止表格。\n\n` +
+      `草稿：\n${draft || '（草稿为空，请直接基于下方原始输入生成终稿）'}\n\n` +
       `原始输入：\n${prompt}`
-    const completion2 = await requestCompletion([{ role: 'user', content: reprompt }])
+    const completion2 = await requestCompletion([{ role: 'user', content: reprompt }], reportOpts)
     if (completion2.success) {
-      const text2 = normalizeText(completion2.data)
-      if (text2 && effectiveLen(text2) >= 180) {
+      const text2 = normalizeMarkdown(completion2.data)
+      if (text2) {
         return toSuccess({
           finalText: text2,
           draftText: draft || '',
@@ -268,24 +292,63 @@ export async function generateDetailedSingleReport(payload) {
       }
     }
 
-    // 最终兜底：本地组装成较完整段落，避免页面只剩一行
-    const factText = facts.length
+    if (draft) {
+      return toSuccess({
+        finalText: draft,
+        draftText: draft,
+        refinedText: completion2.success ? normalizeMarkdown(completion2.data) : '',
+        rounds: 2,
+        source: 'model_draft',
+      })
+    }
+
+    const factLines = facts.length
       ? facts
-          .map((f) => [f?.time, f?.subject, f?.event].filter(Boolean).join('，'))
+          .map((f) => {
+            const line = [f?.time, f?.subject, f?.event, f?.source].filter(Boolean).join(' / ')
+            return line ? `- ${line}` : ''
+          })
           .filter(Boolean)
-          .slice(0, 2)
-          .join('；')
-      : '当前文本可抽取到的结构化事实有限'
-    const reasonText = reasons.length ? reasons.slice(0, 3).join('；') : '未识别到稳定且可重复验证的核心证据链'
-    const suggestionText = suggestions.length ? suggestions.slice(0, 2).join('；') : '建议保留原始链接与关键片段，补充对照来源后再传播'
+      : ['- （当前可抽取的结构化事实有限，建议结合原文段落复核）']
+    const reasonLines = reasons.length
+      ? reasons.map((r) => `- ${r}`)
+      : ['- 未识别到稳定且可重复验证的核心证据链，建议扩大对照信源']
+    const suggestionLines = suggestions.length
+      ? suggestions.map((s) => `- ${s}`)
+      : ['- 建议保留原始链接与关键片段，补充对照权威来源后再传播']
+
     const fallbackText =
-      `围绕“${title || '该新闻文本'}”的核验结果显示，当前风险等级为${riskLevel || '未判定'}，可信度为 ${
+      `# 单篇核验报告\n\n` +
+      `> 说明：模型未返回长文，以下为基于结构化结果的**本地扩写模板**，便于你继续人工补充。\n\n` +
+      `## 背景与议题界定\n\n` +
+      `本次核验围绕「${title || '该新闻文本'}」展开。输入摘要要点如下：${summary || '（无单独摘要）'}。系统给出的**风险等级：${riskLevel || '未判定'}**，**可信度 ${
         Number.isNaN(credibilityScore) ? '—' : credibilityScore
-      }/100。已识别的关键信息包括：${factText}。从证据链看，主要问题集中在${reasonText}，这会直接影响结论稳定性与传播可靠性。综合判断，该内容不宜脱离原文语境进行二次转述，后续处置建议是：${suggestionText}。`
+      }/100**，仅反映当前自动化维度下的综合判断，不能替代人工对原文语境、信源层级与引用链的完整复核。\n\n` +
+      `### 阅读与引用建议\n\n` +
+      `${suggestionLines.join('\n')}\n\n` +
+      `## 核心事实与可核验要点\n\n` +
+      `下列条目来自事实抽取模块，请逐条对照原文核对时间、主体与事件是否被断章取义或过度概括。\n\n` +
+      `${factLines.join('\n')}\n\n` +
+      `## 叙事手法与潜在风险\n\n` +
+      `以下「关键原因」反映模型在情绪煽动、误导性、立场倾向等维度上的线索，用于提示**何处需要加验**，而非直接定性。\n\n` +
+      `${reasonLines.join('\n')}\n\n` +
+      `## 可信度 ${Number.isNaN(credibilityScore) ? '—' : credibilityScore}/100 与风险等级「${riskLevel || '未判定'}」的逐项解读\n\n` +
+      `请在本节人工补充：为何综合风险会落在当前档位；各维度分数（若前端有展示）与文本中哪些表述相互印证；是否存在「高风险表述 + 低风险评分」或相反的张力。\n\n` +
+      `### 与自动化评分的关系\n\n` +
+      `- 可信度 ${Number.isNaN(credibilityScore) ? '—' : credibilityScore}/100 与 **风险等级：${riskLevel || '未判定'}** 应一并理解：前者偏「可采信空间」，后者偏「传播与误导风险」。\n` +
+      `- 若需对外引用，请同时披露分析边界与数据来源。\n\n` +
+      `## 与事实片段、关键原因的对照分析\n\n` +
+      `建议将「事实片段」与「关键原因」做成一一映射：哪些事实被同一叙事框架串联；哪些原因缺乏事实支撑应标注为「待证」。\n\n` +
+      `## 传播与核查的可执行建议\n\n` +
+      `${suggestionLines.join('\n')}\n\n` +
+      `### 下一步核查清单\n\n` +
+      `- 回查原文是否含条件从句、限定语被标题省略。\n` +
+      `- 对关键数字、机构名、职务表述做二次检索。\n` +
+      `- 对「独家」「内部」等信源标签要求可追溯链接或文档。\n`
     return toSuccess({
       finalText: fallbackText,
       draftText: draft || '',
-      refinedText: completion2.success ? normalizeText(completion2.data) : '',
+      refinedText: completion2.success ? normalizeMarkdown(completion2.data) : '',
       rounds: 2,
       source: 'fallback_template',
     })
@@ -296,40 +359,40 @@ export async function generateDetailedSingleReport(payload) {
 
 export async function generateDetailedMultiReport(payload) {
   try {
-    const coreFacts = Array.isArray(payload?.coreFacts) ? payload.coreFacts.slice(0, 6) : []
-    const factDifferences = Array.isArray(payload?.factDifferences) ? payload.factDifferences.slice(0, 8) : []
-    const missingInfo = Array.isArray(payload?.missingInfo) ? payload.missingInfo.slice(0, 6) : []
+    const coreFacts = Array.isArray(payload?.coreFacts) ? payload.coreFacts.slice(0, 12) : []
+    const factDifferences = Array.isArray(payload?.factDifferences) ? payload.factDifferences.slice(0, 14) : []
+    const missingInfo = Array.isArray(payload?.missingInfo) ? payload.missingInfo.slice(0, 10) : []
     const verificationConclusion = String(payload?.verificationConclusion || '').trim()
-    const actionSuggestions = Array.isArray(payload?.actionSuggestions) ? payload.actionSuggestions.slice(0, 6) : []
+    const actionSuggestions = Array.isArray(payload?.actionSuggestions) ? payload.actionSuggestions.slice(0, 10) : []
 
-    const normalizeText = (raw) =>
+    const normalizeMarkdown = (raw) =>
       String(raw || '')
-        .replace(/\s+/g, ' ')
+        .replace(/\r\n/g, '\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{4,}/g, '\n\n')
         .trim()
-    const dedupeSentences = (text) => {
-      const parts = String(text || '')
-        .split(/[。！？!?]/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-      const seen = new Set()
-      const kept = []
-      for (const p of parts) {
-        const key = p.replace(/[，、,\s]/g, '')
-        if (!key || seen.has(key)) continue
-        seen.add(key)
-        kept.push(p)
-      }
-      return kept.join('。') + (kept.length ? '。' : '')
-    }
-    const effectiveLen = (s) => s.replace(/\s/g, '').length
+
+    const reportOpts = { timeout: REQUEST_TIMEOUT_REPORT, maxTokens: REPORT_MAX_TOKENS }
 
     const prompt =
-      `你是“多源事件核查分析师”。请写一段具体的深度分析总结，重点围绕事实差异与核查路径。\n` +
-      `要求：\n` +
-      `1) 只输出一段正文，不要标题，不要分点，不要 JSON。\n` +
-      `2) 目标 200-280 字。\n` +
-      `3) 必须引用至少2条具体事实差异，并至少提及1个信息缺失项。\n` +
-      `4) 必须给出可落地核查结论与传播建议，不得只谈评分或权威性。\n` +
+      `你是资深「多源事件核查分析师」，面向专业读者写**超长、超详细**的中文 Markdown 多源比对报告（不要 JSON、不要代码围栏、不要表格）。\n` +
+      `\n` +
+      `【篇幅硬性要求——必须遵守】\n` +
+      `1) 去掉 Markdown 符号后的**正文纯汉字不少于 1100 字**；**理想区间 1300–2000 字**。宁可写长，不要写短。\n` +
+      `2) 禁止仅用几句列表敷衍；每个二级标题下须有多段完整叙述（每段不少于 80 字）。\n` +
+      `\n` +
+      `【结构硬性要求】\n` +
+      `1) 首行一级标题：# 多源核查总结\n` +
+      `2) **至少 6 个**二级标题（##），不得合并到少于 6 个。建议模块：\n` +
+      `   ## 总览与多源叙事框架\n` +
+      `   ## 一致事实与交叉印证\n` +
+      `   ## 关键分歧与逐条证据对读\n` +
+      `   ## 信息缺口与不确定性\n` +
+      `   ## 核查路径与可重复验证步骤\n` +
+      `   ## 传播风险与对外表述建议\n` +
+      `3) **每个 ## 下**须含：至少 **1 个** ### 子论点；至少 **3 条**「-」列表，每条不少于 25 字，并说明对应输入中的哪类分歧/缺失/结论。\n` +
+      `4) 必须**具体展开至少 3 条**事实分歧（可引用输入原文要点改写），并**至少 2 处**讨论信息缺失项；须写清可落地的核查路径，不得只谈「权威性」或空洞评分。\n` +
       `5) 禁止编造输入中没有的信息。\n\n` +
       `输入：\n` +
       `核心事实一致点：${coreFacts.length ? coreFacts.join('；') : '（无）'}\n` +
@@ -338,18 +401,57 @@ export async function generateDetailedMultiReport(payload) {
       `核查结论：${verificationConclusion || '（无）'}\n` +
       `执行建议：${actionSuggestions.length ? actionSuggestions.join('；') : '（无）'}`
 
-    const first = await requestCompletion([{ role: 'user', content: prompt }])
-    const draft = first.success ? normalizeText(first.data) : ''
+    const first = await requestCompletion([{ role: 'user', content: prompt }], reportOpts)
+    const draft = first.success ? normalizeMarkdown(first.data) : ''
     const secondPrompt =
-      `请将以下草稿改写为更具体的一段（220-300字），保留事实冲突细节与核查建议，禁止空泛套话。\n` +
-      `草稿：${draft || '（草稿为空，请直接基于输入生成）'}\n\n原始输入：\n${prompt}`
-    const second = await requestCompletion([{ role: 'user', content: secondPrompt }])
+      `以下是一篇多源核查 Markdown 草稿。在**不编造新事实**的前提下，**大幅扩写与深化**为终稿。\n` +
+      `\n` +
+      `【终稿篇幅——硬性】纯汉字 **不少于 1300 字**；**理想 1500–2200 字**。\n` +
+      `【终稿结构——硬性】保留 # 多源核查总结；**至少 6 个 ##**；每节保留 ###、多段叙述与充实列表。\n` +
+      `【内容强化】对「分歧点」做**逐条对读式**展开：每条分歧至少写 2–3 句，说明可能成因（笔误、选择性报道、时间差等）及如何回查原文验证——但不得捏造具体信源名称若输入未提供。\n` +
+      `【禁止】变短、写成短讯摘要；禁止表格。\n\n` +
+      `草稿：\n${draft || '（草稿为空，请直接基于输入生成）'}\n\n` +
+      `原始输入：\n${prompt}`
+    const second = await requestCompletion([{ role: 'user', content: secondPrompt }], reportOpts)
     if (second.success) {
-      const finalText = dedupeSentences(normalizeText(second.data))
-      if (finalText && effectiveLen(finalText) >= 160) return toSuccess(finalText)
+      const finalText = normalizeMarkdown(second.data)
+      if (finalText) return toSuccess(finalText)
     }
-    if (draft && effectiveLen(draft) >= 160) return toSuccess(dedupeSentences(draft))
-    return toFailure('多篇深度总结生成失败：千问返回内容过短或为空')
+    if (draft) return toSuccess(draft)
+
+    const lines = (arr) => (Array.isArray(arr) && arr.length ? arr.map((x) => `- ${x}`).join('\n') : '- （无）')
+    const sug = actionSuggestions.length ? actionSuggestions : ['建议对照原文与权威来源复核后再传播']
+    const fallbackText =
+      `# 多源核查总结\n\n` +
+      `> 说明：模型未返回长文，以下为基于结构化比对的**本地扩写模板**，便于继续人工补充。\n\n` +
+      `## 总览与多源叙事框架\n\n` +
+      `${verificationConclusion || '当前比对已形成初步核查结论，但自动化长文生成未就绪。以下分模块列出结构化要点，请在人工撰写时扩展为多段论述。'}\n\n` +
+      `### 一致性轮廓\n\n` +
+      `一致点反映多源在哪些命题上收敛，可作为后续引用的「最低共识」基础；但仍需逐条核对是否仅为措辞一致而实质不同。\n\n` +
+      `## 一致事实与交叉印证\n\n` +
+      `${lines(coreFacts)}\n\n` +
+      `### 如何交叉印证\n\n` +
+      `- 对每条一致点回溯各来源原文句子，确认无断章取义。\n` +
+      `- 对时间、数字、机构名做检索比对。\n` +
+      `- 若仅二手转述一致，应降级为「待核验」。\n\n` +
+      `## 关键分歧与逐条证据对读\n\n` +
+      `${lines(factDifferences)}\n\n` +
+      `### 对读提示\n\n` +
+      `- 为每条分歧标注「可能成因」：时间线、主体指代、统计口径、翻译差异等。\n` +
+      `- 禁止在缺乏来源时推断「某一方撒谎」。\n\n` +
+      `## 信息缺口与不确定性\n\n` +
+      `${lines(missingInfo)}\n\n` +
+      `### 不确定性管理\n\n` +
+      `- 明确哪些结论在补齐缺口前不宜对外断言。\n` +
+      `- 建议列出「最小可公布信息集」。\n\n` +
+      `## 核查路径与可重复验证步骤\n\n` +
+      `${lines(sug)}\n\n` +
+      `## 传播风险与对外表述建议\n\n` +
+      `${lines(sug)}\n\n` +
+      `### 表述清单\n\n` +
+      `- 对外引用须同时给出分歧与一致两方面的上下文。\n` +
+      `- 对仍存疑的命题使用「尚无法确认」而非绝对化措辞。\n`
+    return toSuccess(fallbackText)
   } catch (error) {
     return toFailure(error?.message || 'generateDetailedMultiReport 执行失败')
   }

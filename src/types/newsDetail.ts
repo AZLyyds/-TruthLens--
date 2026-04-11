@@ -38,6 +38,8 @@ export interface NewsDetailPayload {
   summary: string
   source?: string | null
   url?: string | null
+  /** 工作流/库内原文配图链接；不可达时详情页会改用占位预览图 */
+  image?: string | null
   content?: string | null
   contentCN?: string | null
   description?: string | null

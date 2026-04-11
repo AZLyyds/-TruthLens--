@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AnalysisResult } from '../../types/analysis'
+import { renderAiMarkdown } from '../../utils/aiMarkdown.js'
 
 const props = defineProps<{
   loading: boolean
@@ -27,6 +28,8 @@ const structuredReport = computed(() => {
     detailedText,
   }
 })
+
+const detailedReportHtml = computed(() => renderAiMarkdown(structuredReport.value?.detailedText || ''))
 </script>
 
 <template>
@@ -73,11 +76,13 @@ const structuredReport = computed(() => {
           <p class="in-report-line">
             可信度评分：<strong>{{ structuredReport.scoreText }}</strong> / 100
           </p>
-          <p class="in-report-text">
-            {{
-              structuredReport.detailedText ||
-              '该文本已完成结构化核验，建议结合关键证据点与执行建议进行复核处置。'
-            }}
+          <div
+            v-if="structuredReport.detailedText"
+            class="in-report-text in-report-md markdown-body"
+            v-html="detailedReportHtml"
+          />
+          <p v-else class="in-report-text in-report-text--placeholder">
+            该文本已完成结构化核验，建议结合关键证据点与执行建议进行复核处置。
           </p>
         </div>
       </template>
@@ -276,9 +281,9 @@ const structuredReport = computed(() => {
   position: relative;
   z-index: 1;
   margin-top: auto;
-  padding-top: 16px;
-  max-height: 46%;
-  min-height: 140px;
+  padding-top: 12px;
+  max-height: min(72vh, 720px);
+  min-height: 260px;
   overflow: auto;
   scrollbar-width: thin;
 }
@@ -323,8 +328,8 @@ const structuredReport = computed(() => {
 }
 
 .in-report-line {
-  margin: 0 0 8px;
-  font-size: 12px;
+  margin: 0 0 10px;
+  font-size: 13px;
   color: #4b5563;
 }
 
@@ -340,6 +345,61 @@ const structuredReport = computed(() => {
   color: #374151;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.in-report-md {
+  margin-top: 4px;
+  max-height: min(58vh, 560px);
+  overflow-y: auto;
+  padding-right: 4px;
+  font-size: 15px;
+  line-height: 1.72;
+  color: #1f2937;
+}
+
+.in-report-md :deep(h1) {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #7f1d1d;
+  line-height: 1.35;
+}
+
+.in-report-md :deep(h2) {
+  margin: 12px 0 6px;
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: #991b1b;
+}
+
+.in-report-md :deep(h3) {
+  margin: 10px 0 5px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.in-report-md :deep(p) {
+  margin: 0 0 8px;
+}
+
+.in-report-md :deep(ul),
+.in-report-md :deep(ol) {
+  margin: 0 0 8px;
+  padding-left: 1.2rem;
+}
+
+.in-report-md :deep(li) {
+  margin: 0 0 5px;
+}
+
+.in-report-md :deep(strong) {
+  color: #111827;
+}
+
+.in-report-text--placeholder {
+  font-size: 13.5px;
+  line-height: 1.68;
 }
 
 .in-aside-title {

@@ -79,27 +79,19 @@ const sourceLine = computed(() => [props.result?.meta?.sourceName, props.analyze
           </div>
         </section>
 
-        <section class="an-sheet an-sheet--flush">
+        <section class="an-sheet an-sheet--flush an-sheet--last">
           <p class="an-eyebrow">证据路径</p>
-          <EvidencePath :steps="steps" :credibility-score="result.credibilityScore" />
-        </section>
-
-        <section class="an-sheet an-sheet--last">
-          <p class="an-eyebrow">关键原因与建议</p>
-          <div class="an-columns">
-            <div class="an-col">
-              <h4 class="an-col-title">原因</h4>
-              <ul class="an-list">
-                <li v-for="(r, i) in result.reasons?.length ? result.reasons : ['暂无']" :key="'r-' + i">{{ r }}</li>
-              </ul>
-            </div>
-            <div class="an-col">
-              <h4 class="an-col-title">建议</h4>
-              <ul class="an-list">
-                <li v-for="(s, i) in result.suggestions?.length ? result.suggestions : ['暂无']" :key="'s-' + i">{{ s }}</li>
-              </ul>
-            </div>
-          </div>
+          <!-- 原因与建议已并入各步骤展开面板，避免与证据路径脱节 -->
+          <EvidencePath
+            :steps="steps"
+            :credibility-score="result.credibilityScore"
+            :reasons="result.reasons"
+            :suggestions="result.suggestions"
+            :facts="result.facts"
+            :dimensions="result.dimensions"
+            :risk-level="result.riskLevel"
+            :verdict="result.verdict"
+          />
         </section>
       </div>
     </div>
@@ -326,44 +318,10 @@ const sourceLine = computed(() => [props.result?.meta?.sourceName, props.analyze
   max-height: 200px;
 }
 
-.an-columns {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-
 @media (max-width: 640px) {
-  .an-columns {
-    grid-template-columns: 1fr;
-  }
-
   .an-metrics {
     grid-template-columns: 1fr;
   }
-}
-
-.an-col-title {
-  margin: 0 0 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #6e6e73;
-}
-
-.an-list {
-  margin: 0;
-  padding-left: 1.05rem;
-  font-size: 12px;
-  line-height: 1.45;
-  letter-spacing: -0.01em;
-  color: #1d1d1f;
-}
-
-.an-list li {
-  margin-bottom: 6px;
-}
-
-.an-list li:last-child {
-  margin-bottom: 0;
 }
 
 .an-empty {

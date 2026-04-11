@@ -1,6 +1,15 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { fetchNewsList } from '../api/news'
+
+const router = useRouter()
+
+function goNewsDetail(item) {
+  const id = item?.id
+  if (id == null || id === '') return
+  router.push({ name: 'news-detail', params: { id: String(id) }, query: { from: 'portal-screen' } })
+}
 
 const slides = ref([])
 const listItems = ref([])
@@ -103,7 +112,7 @@ function buildDataFromNews(items) {
     id: n.id,
     title: n.title || '（无标题）',
     meta: formatMeta(n),
-    abstract: n.summary || n.description || '（暂无摘要）',
+    abstract: String(n.summary || n.description || '').trim(),
     img: n.thumbnailUrl || `https://picsum.photos/seed/tllist${idx + 1}/320/240`,
   }))
 }
@@ -158,14 +167,14 @@ onBeforeUnmount(() => {
             <div class="focus-carousel-track" :style="trackStyle">
               <article
                 v-for="(s, i) in slides"
-                :key="s.img"
+                :key="String(s.id ?? s.img)"
                 class="focus-slide"
                 role="group"
                 aria-roledescription="slide"
                 :aria-label="`${i + 1} / ${n}`"
                 :aria-hidden="i === index ? 'false' : 'true'"
               >
-                <div class="focus-slide-card">
+                <div class="focus-slide-card" @click="goNewsDetail(s)">
                   <figure class="focus-slide-figure">
                     <img :src="s.img" alt="" width="960" height="720" :loading="i === 0 ? 'eager' : 'lazy'" />
                     <figcaption class="focus-slide-overlay">
@@ -191,14 +200,14 @@ onBeforeUnmount(() => {
       <section aria-labelledby="list-heading">
         <h2 id="list-heading" class="portal-section-title">要闻列表</h2>
         <div class="news-feed">
-          <article v-for="item in listItems" :key="item.img" class="news-list-item">
+          <article v-for="item in listItems" :key="String(item.id ?? item.img)" class="news-list-item" @click="goNewsDetail(item)">
             <figure class="news-list-thumb">
               <img :src="item.img" alt="" width="320" height="240" loading="lazy" />
             </figure>
             <div class="news-list-body">
               <h3>{{ item.title }}</h3>
               <div class="news-list-meta">{{ item.meta }}</div>
-              <p class="news-list-abstract">
+              <p v-if="item.abstract" class="news-list-abstract">
                 {{ item.abstract }}
               </p>
             </div>
@@ -443,6 +452,12 @@ onBeforeUnmount(() => {
   border: none;
   box-shadow: none;
   background: #000;
+  cursor: pointer;
+}
+
+.focus-slide-card:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.85);
+  outline-offset: 3px;
 }
 
 .focus-slide-figure {
@@ -539,6 +554,7 @@ onBeforeUnmount(() => {
   border-radius: 0;
   box-shadow: none;
   transition: border-color 0.2s ease;
+  cursor: pointer;
 }
 
 .news-list-item:last-child {

@@ -76,7 +76,7 @@ function formatTime(value) {
 
 function toDetail(item) {
   if (item?.id == null) return
-  router.push({ name: 'news-detail', params: { id: String(item.id) } })
+  router.push({ name: 'news-detail', params: { id: String(item.id) }, query: { from: 'portal' } })
 }
 
 async function loadNews() {
