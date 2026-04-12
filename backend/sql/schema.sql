@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS news (
   country VARCHAR(16) NULL DEFAULT 'global',
   published_at DATETIME NULL,
   image_url VARCHAR(2048) NULL,
+  truth_lens_extras JSON NULL COMMENT 'TruthLens 扩展：如 FakeScore 模型',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_news_published_at (published_at),
   INDEX idx_news_source_name (source_name)

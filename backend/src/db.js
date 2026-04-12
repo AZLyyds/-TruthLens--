@@ -37,6 +37,7 @@ const schemaStatements = [
     country VARCHAR(16) NULL DEFAULT 'global',
     published_at DATETIME NULL,
     image_url VARCHAR(2048) NULL,
+    truth_lens_extras JSON NULL COMMENT 'TruthLens 扩展：如 FakeScore 模型结果（不依赖 analysis_records）',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_news_published_at (published_at),
     INDEX idx_news_source_name (source_name)
@@ -158,6 +159,21 @@ export async function ensureNewsImageUrlColumn(pool) {
   }
 }
 
+/** FakeScore 等可挂在新闻行上，详情补算无需 analysis_records */
+export async function ensureNewsTruthLensExtrasColumn(pool) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'news'`,
+    )
+    if (!rows?.length) return
+    const names = new Set(rows.map((r) => r.COLUMN_NAME))
+    if (names.has('truth_lens_extras')) return
+    await pool.query(`ALTER TABLE news ADD COLUMN truth_lens_extras JSON NULL`)
+  } catch (e) {
+    console.warn('ensureNewsTruthLensExtrasColumn:', e.message)
+  }
+}
+
 export async function initDatabase() {
   for (const statement of schemaStatements) {
     await pool.query(statement)
@@ -165,6 +181,7 @@ export async function initDatabase() {
   await migrateQueryHistoryTable(pool)
   await migrateNewsTableDropUnusedColumns(pool)
   await ensureNewsImageUrlColumn(pool)
+  await ensureNewsTruthLensExtrasColumn(pool)
 }
 
 export function getPool() {

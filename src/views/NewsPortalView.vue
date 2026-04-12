@@ -262,7 +262,11 @@ async function triggerWorkflow() {
       requestedAt: new Date().toISOString(),
       timeoutMs: 360000,
     })
-    let msg = `工作流触发成功：已写入 ${result?.storedCount ?? 0} 条结果。`
+    let msg = `工作流触发成功：已写入 ${result?.storedCount ?? 0} 条结果。12 维 FakeScore 在后台自动计算，打开新闻详情将显示加载动画直至完成。`
+    const firstCreated = Array.isArray(result?.created) ? result.created[0] : null
+    if (firstCreated?.newsId) {
+      msg += ` 首条新闻 id：${firstCreated.newsId}。`
+    }
     const w = result?.workflow
     if (w && typeof w === 'object') {
       const bits = []

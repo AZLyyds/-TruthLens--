@@ -1,6 +1,28 @@
 import axios from 'axios'
 
-const baseURL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+/**
+ * 兼容仅填写主机（如 http://127.0.0.1:3000）而漏掉 /api/v1 的 .env，否则会请求到 /news/... 导致后端 404。
+ */
+function normalizeApiBase(raw) {
+  const fallback = '/api/v1'
+  if (raw == null || String(raw).trim() === '') return fallback
+  const s = String(raw).trim().replace(/\/$/, '')
+  if (s.startsWith('/')) {
+    return s.includes('/api') ? s : fallback
+  }
+  try {
+    const u = new URL(s)
+    const p = u.pathname.replace(/\/$/, '') || '/'
+    if (p === '/' || p === '') {
+      u.pathname = '/api/v1'
+    }
+    return u.toString().replace(/\/$/, '')
+  } catch {
+    return fallback
+  }
+}
+
+const baseURL = normalizeApiBase(import.meta.env.VITE_API_BASE_URL)
 
 const http = axios.create({
   baseURL,

@@ -16,6 +16,8 @@ import {
   summarize,
 } from '../../src/backend/services/aiService.js'
 import { cleanArticleText, isLikelyUrl } from './newsCleaner.js'
+import { extractFeaturesAndComputeFakeScore } from './featureExtractForFakeScore.js'
+import { FEATURE_KEYS } from './fakeScoreModel.js'
 
 const app = express()
 const pool = getPool()
@@ -776,6 +778,190 @@ function coalesceWorkflowPayload(outputObj) {
   return Object.assign({}, raw, ...layers)
 }
 
+/** 详情 API：从合并后的工作流对象取出 12 维 FakeScore 模型结果（根或内层若有则可读） */
+function pickTruthLensFakeScoreModel(wf, outputObj) {
+  const m =
+    wf?.truthLensFakeScoreModel ??
+    outputObj?.truthLensFakeScoreModel ??
+    null
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return null
+  const feats = m.features
+  const features =
+    feats && typeof feats === 'object' && !Array.isArray(feats) ? feats : null
+  const fakeScore = m.fakeScore != null && m.fakeScore !== '' ? Number(m.fakeScore) : null
+  const errStr = m.error != null ? String(m.error) : null
+  if (!features && errStr == null && (fakeScore == null || Number.isNaN(fakeScore))) return null
+  let featureReasons = null
+  const fr = m.featureReasons
+  if (fr && typeof fr === 'object' && !Array.isArray(fr)) {
+    featureReasons = {}
+    for (const k of FEATURE_KEYS) {
+      const t = fr[k]
+      featureReasons[k] = typeof t === 'string' ? t : t != null ? String(t) : ''
+    }
+  }
+  return {
+    features,
+    featureReasons,
+    fakeScore: fakeScore != null && !Number.isNaN(fakeScore) ? fakeScore : null,
+    pFake: m.pFake != null && m.pFake !== '' ? Number(m.pFake) : null,
+    f: m.f != null && m.f !== '' ? Number(m.f) : null,
+    computedAt: m.computedAt != null ? String(m.computedAt) : null,
+    error: errStr,
+  }
+}
+
+function pickFakeScoreModelStatus(wf, outputObj) {
+  const s = wf?.truthLensFakeScoreModelStatus ?? outputObj?.truthLensFakeScoreModelStatus
+  if (s === 'pending' || s === 'ready' || s === 'failed') return s
+  if (pickTruthLensFakeScoreModel(wf, outputObj)) return 'ready'
+  return null
+}
+
+function pickFakeScoreModelError(wf, outputObj) {
+  const e = wf?.truthLensFakeScoreModelError ?? outputObj?.truthLensFakeScoreModelError
+  return e != null && String(e).trim() ? String(e).trim() : null
+}
+
+/** 详情合并：新闻行 truth_lens_extras 与 analysis_records.output_json 叠加（后者覆盖同名键） */
+function mergeNewsExtrasWithAnalysisOutput(extrasRaw, arOutputRaw) {
+  const a =
+    extrasRaw != null && typeof extrasRaw === 'object' && !Array.isArray(extrasRaw)
+      ? extrasRaw
+      : parseJsonSafe(extrasRaw, {})
+  const b =
+    arOutputRaw != null && typeof arOutputRaw === 'object' && !Array.isArray(arOutputRaw)
+      ? arOutputRaw
+      : parseJsonSafe(arOutputRaw, {})
+  return { ...a, ...b }
+}
+
+/** 供千问参考：百炼工作流返回 JSON 中的关键字段（非「深度分析」工作台） */
+function buildWorkflowContextForFakeScore(merged) {
+  if (!merged || typeof merged !== 'object') return ''
+  const pick = {}
+  /** 不传综合可信度/虚假总分及 dimensions 里常见的「可信度维度分」，避免千问照抄成与栏顶 100−可信 一致 */
+  const keys = [
+    'risk_level',
+    'riskLevel',
+    'verdict',
+    'overallConclusion',
+    'overall_conclusion',
+    'reasons',
+    'suggestions',
+    'summary',
+    'newsSummary',
+    'ai_summary',
+    'aiSummary',
+    'facts',
+    'multiSourceCheck',
+    'multi_source_check',
+    'chinaRelated',
+    'china_related',
+    'risk',
+    'meta',
+    'titleCN',
+    'title_cn',
+    'contentCN',
+    'content_cn',
+  ]
+  for (const k of keys) {
+    if (merged[k] !== undefined) pick[k] = merged[k]
+  }
+  try {
+    const s = JSON.stringify(pick)
+    return s.length > 14000 ? `${s.slice(0, 14000)}…` : s
+  } catch {
+    return ''
+  }
+}
+
+async function mergeAnalysisRecordOutputJson(analysisRecordId, mutator) {
+  const [rows] = await pool.execute(
+    'SELECT output_json AS outputJson FROM analysis_records WHERE id = ? LIMIT 1',
+    [analysisRecordId],
+  )
+  if (!rows.length) return false
+  const out = parseJsonSafe(rows[0].outputJson, {})
+  const next = mutator(out)
+  await pool.execute('UPDATE analysis_records SET output_json = ? WHERE id = ?', [
+    JSON.stringify(next),
+    analysisRecordId,
+  ])
+  return true
+}
+
+/** 百炼工作流已入库后异步调用通义抽取特征并写回 analysis_records.output_json */
+async function runFakeScoreBackground(analysisRecordId, article) {
+  let modelPayload = null
+  try {
+    const tlR = await extractFeaturesAndComputeFakeScore(article)
+    await mergeAnalysisRecordOutputJson(analysisRecordId, (out) => {
+      const base = { ...out }
+      if (tlR.success) {
+        modelPayload = {
+          features: tlR.features,
+          featureReasons: tlR.featureReasons,
+          fakeScore: tlR.score.fakeScore,
+          pFake: tlR.score.pFake,
+          f: tlR.score.f,
+          computedAt: new Date().toISOString(),
+        }
+        base.truthLensFakeScoreModel = modelPayload
+        base.truthLensFakeScoreModelStatus = 'ready'
+        delete base.truthLensFakeScoreModelPending
+      } else {
+        base.truthLensFakeScoreModelStatus = 'failed'
+        base.truthLensFakeScoreModelError = tlR.msg || '模型抽取失败'
+      }
+      return base
+    })
+    if (tlR.success && modelPayload) {
+      const [nidRows] = await pool.execute(
+        'SELECT news_id AS newsId FROM analysis_records WHERE id = ? LIMIT 1',
+        [analysisRecordId],
+      )
+      const nid = nidRows[0]?.newsId
+      if (nid != null) {
+        const [nr] = await pool.execute(
+          'SELECT truth_lens_extras AS x FROM news WHERE id = ? LIMIT 1',
+          [nid],
+        )
+        const prev = parseJsonSafe(nr[0]?.x, {})
+        const next = {
+          ...prev,
+          truthLensFakeScoreModel: modelPayload,
+          truthLensFakeScoreModelStatus: 'ready',
+        }
+        delete next.truthLensFakeScoreModelError
+        await pool.execute('UPDATE news SET truth_lens_extras = ? WHERE id = ?', [
+          JSON.stringify(next),
+          nid,
+        ])
+      }
+    }
+  } catch (e) {
+    console.warn('[fakeScoreBackground]', analysisRecordId, e?.message || e)
+    try {
+      await mergeAnalysisRecordOutputJson(analysisRecordId, (out) => ({
+        ...out,
+        truthLensFakeScoreModelStatus: 'failed',
+        truthLensFakeScoreModelError: e?.message || '模型抽取异常',
+      }))
+    } catch (e2) {
+      console.error('[fakeScoreBackground] merge failed', e2)
+    }
+  }
+}
+
+function scheduleFakeScoreExtraction(analysisRecordId, article) {
+  setImmediate(() => {
+    runFakeScoreBackground(analysisRecordId, article).catch((err) => {
+      console.error('[fakeScoreBackground] fatal', analysisRecordId, err)
+    })
+  })
+}
+
 function parseMultiSourceCheckBlob(m) {
   if (m == null) return null
   if (typeof m === 'string') {
@@ -1021,7 +1207,8 @@ app.get('/api/v1/news/:id', async (req, res, next) => {
       image_url AS imageUrl,
       language,
       country,
-      published_at AS publishedAt
+      published_at AS publishedAt,
+      truth_lens_extras AS truthLensExtras
     FROM news WHERE id = ?
     `,
     [id],
@@ -1043,9 +1230,10 @@ app.get('/api/v1/news/:id', async (req, res, next) => {
   let latestAnalysis = null
   let outputObj = {}
   let wf = {}
+  const newsExtrasRaw = row.truthLensExtras
   if (arRows.length) {
     const ar = arRows[0]
-    outputObj = parseJsonSafe(ar.outputJson, {})
+    outputObj = mergeNewsExtrasWithAnalysisOutput(newsExtrasRaw, ar.outputJson)
     wf = coalesceWorkflowPayload(outputObj)
     latestAnalysis = {
       fakeScore: Number(ar.fakeScore),
@@ -1061,6 +1249,9 @@ app.get('/api/v1/news/:id', async (req, res, next) => {
       meta: wf.meta,
       aiSummary: wf.aiSummary ?? wf.ai_summary,
     }
+  } else if (newsExtrasRaw != null && newsExtrasRaw !== '') {
+    outputObj = mergeNewsExtrasWithAnalysisOutput(newsExtrasRaw, {})
+    wf = coalesceWorkflowPayload(outputObj)
   }
 
   const langRaw = wf.lang ?? wf.language ?? row.language
@@ -1142,6 +1333,9 @@ app.get('/api/v1/news/:id', async (req, res, next) => {
     suggestions: Array.isArray(wf.suggestions) ? wf.suggestions : [],
     dimensions: wf.dimensions ?? null,
     latestAnalysis,
+    fakeScoreModel: pickTruthLensFakeScoreModel(wf, outputObj),
+    fakeScoreModelStatus: pickFakeScoreModelStatus(wf, outputObj),
+    fakeScoreModelError: pickFakeScoreModelError(wf, outputObj),
     rawWorkflow: cloneForJsonResponse(outputObj),
   }
 
@@ -1151,6 +1345,116 @@ app.get('/api/v1/news/:id', async (req, res, next) => {
     next(err)
   }
 })
+
+/**
+ * 根据 news 表中的标题/正文/来源等调用通义抽特征并套公式；结果写入 news.truth_lens_extras，
+ * 若存在百炼工作流产生的 single 分析记录则同时合并进 output_json。
+ * 不依赖「深度分析」工作台；body.force === true 时强制重算。
+ */
+const postNewsFakeScoreModelHandler = async (req, res, next) => {
+  try {
+    const rawId = req.params.id
+    const id = Number(rawId)
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(422).json(fail('invalid news id', 422, 'VALIDATION_ERROR'))
+    }
+    const force = Boolean(req.body?.force)
+
+    const [newsRows] = await pool.execute(
+      `
+      SELECT title, content, description, source_name AS sourceName, truth_lens_extras AS truthLensExtras
+      FROM news WHERE id = ? LIMIT 1
+      `,
+      [id],
+    )
+    if (!newsRows.length) return res.status(404).json(fail('news not found', 404, 'NOT_FOUND'))
+
+    const [arRows] = await pool.execute(
+      `
+      SELECT id, output_json AS outputJson
+      FROM analysis_records
+      WHERE news_id = ? AND analysis_type = 'single'
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [id],
+    )
+
+    const row = newsRows[0]
+    const mergedPeek = mergeNewsExtrasWithAnalysisOutput(row.truthLensExtras, arRows[0]?.outputJson)
+    const wfAlign = coalesceWorkflowPayload(mergedPeek)
+    if (!force && mergedPeek.truthLensFakeScoreModelStatus === 'pending') {
+      return res.json(success({ status: 'pending', message: '后台正在计算 FakeScore 模型，请稍后刷新详情' }))
+    }
+    const prevModel = mergedPeek.truthLensFakeScoreModel
+    if (
+      !force &&
+      prevModel &&
+      typeof prevModel === 'object' &&
+      prevModel.features &&
+      typeof prevModel.features === 'object' &&
+      !Array.isArray(prevModel.features)
+    ) {
+      const wfPeek = coalesceWorkflowPayload(mergedPeek)
+      return res.json(success(pickTruthLensFakeScoreModel(wfPeek, mergedPeek)))
+    }
+
+    const wfCtx = buildWorkflowContextForFakeScore(wfAlign) || undefined
+    const tlR = await extractFeaturesAndComputeFakeScore({
+      title: row.title,
+      content: cleanArticleText(row.content || ''),
+      description: row.description,
+      sourceName: row.sourceName,
+      workflowContext: wfCtx,
+    })
+    if (!tlR.success) {
+      return res.status(502).json(fail(tlR.msg || '模型抽取失败', 502, 'AI_ERROR'))
+    }
+    const modelPayload = {
+      features: tlR.features,
+      featureReasons: tlR.featureReasons,
+      fakeScore: tlR.score.fakeScore,
+      pFake: tlR.score.pFake,
+      f: tlR.score.f,
+      computedAt: new Date().toISOString(),
+    }
+
+    const prevExtras = parseJsonSafe(row.truthLensExtras, {})
+    const nextExtras = {
+      ...prevExtras,
+      truthLensFakeScoreModel: modelPayload,
+      truthLensFakeScoreModelStatus: 'ready',
+    }
+    delete nextExtras.truthLensFakeScoreModelError
+    await pool.execute('UPDATE news SET truth_lens_extras = ? WHERE id = ?', [
+      JSON.stringify(nextExtras),
+      id,
+    ])
+
+    if (arRows.length) {
+      const ar = arRows[0]
+      let out = parseJsonSafe(ar.outputJson, {})
+      out = {
+        ...out,
+        truthLensFakeScoreModel: modelPayload,
+        truthLensFakeScoreModelStatus: 'ready',
+      }
+      delete out.truthLensFakeScoreModelError
+      await pool.execute('UPDATE analysis_records SET output_json = ? WHERE id = ?', [
+        JSON.stringify(out),
+        ar.id,
+      ])
+    }
+
+    res.json(success(modelPayload))
+  } catch (err) {
+    next(err)
+  }
+}
+
+app.post('/api/v1/news/:id/fake-score-model', postNewsFakeScoreModelHandler)
+/** 兼容误配代理、只挂到 /api 下的部署 */
+app.post('/api/news/:id/fake-score-model', postNewsFakeScoreModelHandler)
 
 app.post('/api/v1/news', async (req, res) => {
   const { title, sourceName, content, url } = req.body || {}
@@ -1260,7 +1564,35 @@ app.post('/api/v1/analysis/single', async (req, res) => {
   }
 
   const risk = riskResult.data
-  const fakeScore = Number(risk?.overall_risk || 0)
+  let fakeScore = Number(risk?.overall_risk || 0)
+  let truthLensFakeScoreModel = null
+  try {
+    const singlePass2Context = JSON.stringify({
+      firstPassRisk: risk,
+      facts: factsResult.data.facts,
+    })
+    const tlR = await extractFeaturesAndComputeFakeScore({
+      title: meta.newsTitle,
+      content: cleanArticleText(meta.newsBody),
+      description: meta.newsSummary,
+      sourceName: meta.sourceName,
+      workflowContext: `【单篇分析-第一轮 AI 结构化输出，供第二轮抽取 12 维风险特征】\n${singlePass2Context.slice(0, 12000)}`,
+    })
+    if (tlR.success) {
+      fakeScore = tlR.score.fakeScore
+      truthLensFakeScoreModel = {
+        features: tlR.features,
+        featureReasons: tlR.featureReasons,
+        fakeScore: tlR.score.fakeScore,
+        pFake: tlR.score.pFake,
+        f: tlR.score.f,
+        computedAt: new Date().toISOString(),
+      }
+    }
+  } catch (e) {
+    console.warn('[analysis/single] formula fake score skipped:', e?.message || e)
+  }
+
   const riskLevel = fakeScore >= 70 ? '高风险' : fakeScore >= 45 ? '中风险' : '低风险'
   const dynamicExplain = buildSingleReasonsAndSuggestions({
     facts: factsResult.data.facts,
@@ -1319,6 +1651,8 @@ app.post('/api/v1/analysis/single', async (req, res) => {
       emotionManipulation: Number(risk.sensational_score || 0),
       propagationMisleading: Number(risk.misleading_score || 0),
     },
+    formulaFakeScore: fakeScore,
+    truthLensFakeScoreModel,
   }
 
   const uid = await resolveHistoryUserId(req)
@@ -2756,6 +3090,8 @@ async function runNewsWorkflowHandler(req, res) {
     const workflowRunSalt = randomUUID()
 
     let storedCount = 0
+    /** @type {{ newsId: number | null, analysisRecordId: number }[]} */
+    const created = []
 
     for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
       const item = items[itemIndex]
@@ -2781,6 +3117,8 @@ async function runNewsWorkflowHandler(req, res) {
           rawOutputTextWasTruncated:
             typeof workflowText === 'string' && workflowText.length > WORKFLOW_RAW_TEXT_CAP,
         },
+        /** 通义千问特征抽取在 HTTP 响应返回后异步执行，见 scheduleFakeScoreExtraction */
+        truthLensFakeScoreModelStatus: 'pending',
       }
       const outputObj = merged
       const fakeRaw =
@@ -2825,7 +3163,7 @@ async function runNewsWorkflowHandler(req, res) {
 
       const inputJson = merged?.input || merged?.input_json || merged?.request || merged?.raw_input || null
 
-      const [ar] = await pool.execute(
+      const [arHeader] = await pool.execute(
         `
           INSERT INTO analysis_records (
             user_id, news_id, analysis_type, input_json, output_json, fake_score, risk_level
@@ -2848,6 +3186,19 @@ async function runNewsWorkflowHandler(req, res) {
         ],
       )
 
+      const analysisRecordId = arHeader.insertId
+      if (analysisRecordId) {
+        const wfAlign = coalesceWorkflowPayload(merged)
+        scheduleFakeScoreExtraction(analysisRecordId, {
+          title,
+          content: cleanArticleText(content),
+          description: newsSummary != null ? String(newsSummary).slice(0, 2000) : null,
+          sourceName: sourceName != null ? String(sourceName) : null,
+          workflowContext: buildWorkflowContextForFakeScore(wfAlign) || undefined,
+        })
+      }
+      created.push({ newsId: newsId || null, analysisRecordId })
+
       const finalNewsTitle = title || merged?.headline || `工作流新闻 ${String(newsId || newsUid).slice(0, 8)}`
       const finalNewsSummary = newsSummary
         ? clampSummaryChars(String(newsSummary), 100)
@@ -2863,7 +3214,7 @@ async function runNewsWorkflowHandler(req, res) {
         sourceName,
         fullAnalysisJson: outputJson,
         status: 'success',
-        analysisRecordId: ar.insertId,
+        analysisRecordId,
       })
 
       if (alertRule.enabled && normalizedFakeScore != null && normalizedFakeScore >= alertRule.riskThreshold) {
@@ -2873,7 +3224,7 @@ async function runNewsWorkflowHandler(req, res) {
             VALUES (?, ?, ?, ?, ?, ?)
           `,
           [
-            ar.insertId,
+            analysisRecordId,
             '高风险新闻工作流命中',
             sourceName || 'workflow',
             riskLevel,
@@ -2886,7 +3237,7 @@ async function runNewsWorkflowHandler(req, res) {
       storedCount += 1
     }
 
-    return res.json(success({ storedCount, workflow: workflowMeta }))
+    return res.json(success({ storedCount, workflow: workflowMeta, created }))
   } catch (error) {
     const msg =
       error?.response?.data?.message ||

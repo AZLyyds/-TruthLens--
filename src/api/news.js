@@ -68,6 +68,42 @@ function mockNewsDetail(id) {
       analyzedAt: new Date().toISOString(),
     },
     rawWorkflow: null,
+    fakeScoreModelStatus: 'ready',
+    fakeScoreModelError: null,
+    fakeScoreModel: {
+      features: {
+        x1: 0.22,
+        x2: 0.18,
+        x3: 0.25,
+        x5: 0.35,
+        x6: 0.2,
+        x7: 0.28,
+        x8: 0.5,
+        x9: 0.5,
+        x10: 0.45,
+        x11: 0.3,
+        x12: 0.15,
+        x13: 0.08,
+      },
+      featureReasons: {
+        x1: '示例：来源为常见通讯社域名，未见钓鱼特征，故来源不可信度中等偏低。',
+        x2: '示例：措辞整体克制，未出现明显一边倒口号式定性，偏见信号有限。',
+        x3: '示例：部分关键断言缺少可点击的一手链接，核验难度略高。',
+        x5: '示例：标题与导语情绪词不多，煽动性一般。',
+        x6: '示例：对立阵营标签使用较少，极性不算极端。',
+        x7: '示例：夹杂解读性句子，可验证事实密度中等。',
+        x8: '示例：单篇转载链信息不足，按缺省给接近中性。',
+        x9: '示例：无独立传播数据，保持中性估计。',
+        x10: '示例：未见异常节奏描述，略低于中性。',
+        x11: '示例：稿内未呈现多源对照，孤证感略升。',
+        x12: '示例：标题与正文核心一致，标题党程度低。',
+        x13: '示例：语句通顺，未见明显机翻或乱码。',
+      },
+      fakeScore: 41.7,
+      pFake: 0.417,
+      f: -0.34,
+      computedAt: new Date().toISOString(),
+    },
   }
 }
 
@@ -78,4 +114,15 @@ function mockNewsDetail(id) {
 export async function fetchNewsDetail(id) {
   if (useMock) return mockNewsDetail(id)
   return http.get(`/news/${id}`)
+}
+
+/**
+ * 为已有分析记录补算或强制重算 FakeScore 模型（需后端 DASHSCOPE_API_KEY）
+ * @param {string|number} id
+ * @param {{ force?: boolean }} [body]
+ * @returns {Promise<import('../types/newsDetail').NewsDetailFakeScoreModel>}
+ */
+export async function postNewsFakeScoreModel(id, body = {}) {
+  if (useMock) return mockNewsDetail(id).fakeScoreModel
+  return http.post(`/news/${id}/fake-score-model`, body, { timeout: 120000 })
 }

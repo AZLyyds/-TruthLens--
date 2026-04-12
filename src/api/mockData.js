@@ -45,6 +45,28 @@ export const mockSingleAnalysis = {
     emotionManipulation: 58,
     propagationMisleading: 69,
   },
+  formulaFakeScore: 48,
+  truthLensFakeScoreModel: {
+    fakeScore: 48,
+    pFake: 0.48,
+    f: 0,
+    computedAt: new Date().toISOString(),
+    features: { x1: 0.2, x2: 0.2, x3: 0.2, x5: 0.3, x6: 0.2, x7: 0.2, x8: 0.5, x9: 0.5, x10: 0.5, x11: 0.2, x12: 0.2, x13: 0.1 },
+    featureReasons: {
+      x1: 'Mock：来源域名可识别，未见明显仿冒。',
+      x2: 'Mock：叙述相对平稳。',
+      x3: 'Mock：部分信息待交叉验证。',
+      x5: 'Mock：情绪词适中。',
+      x6: 'Mock：对立表述不多。',
+      x7: 'Mock：事实与评论比例一般。',
+      x8: 'Mock：传播链信息缺失，取中性。',
+      x9: 'Mock：无扩散数据，取中性。',
+      x10: 'Mock：节奏信息不足，取中性。',
+      x11: 'Mock：单源叙事为主。',
+      x12: 'Mock：标题未严重夸大。',
+      x13: 'Mock：语言正常。',
+    },
+  },
 }
 
 export const mockMultiAnalysis = {

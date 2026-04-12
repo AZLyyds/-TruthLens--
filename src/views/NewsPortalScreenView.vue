@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchNewsList } from '../api/news'
+import { newsPortalPicsumPlaceholder } from '../utils/newsFallbackImage'
 
 const router = useRouter()
 
@@ -105,7 +106,7 @@ function buildDataFromNews(items) {
   slides.value = focus.map((n, idx) => ({
     id: n.id,
     title: n.title || '（无标题）',
-    img: n.thumbnailUrl || `https://picsum.photos/seed/tlstrip${idx + 1}/960/720`,
+    img: n.thumbnailUrl || newsPortalPicsumPlaceholder(`tlstrip${idx + 1}`, 960, 720),
   }))
 
   listItems.value = rest.map((n, idx) => ({
@@ -113,7 +114,7 @@ function buildDataFromNews(items) {
     title: n.title || '（无标题）',
     meta: formatMeta(n),
     abstract: String(n.summary || n.description || '').trim(),
-    img: n.thumbnailUrl || `https://picsum.photos/seed/tllist${idx + 1}/320/240`,
+    img: n.thumbnailUrl || newsPortalPicsumPlaceholder(`tllist${idx + 1}`, 320, 240),
   }))
 }
 

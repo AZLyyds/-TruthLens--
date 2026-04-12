@@ -15,6 +15,18 @@ export interface NewsMultiSourceCheck {
   mcpRelatedArticles: McpRelatedArticleRef[]
 }
 
+/** 12 维风险特征 + 线性加权 FakeScore（output_json.truthLensFakeScoreModel） */
+export interface NewsDetailFakeScoreModel {
+  features: Record<string, number> | null
+  /** 与 features 同键：通义返回的各维打分依据（简体中文） */
+  featureReasons?: Record<string, string> | null
+  fakeScore: number | null
+  pFake: number | null
+  f: number | null
+  computedAt?: string | null
+  error?: string | null
+}
+
 export interface NewsDetailLatestAnalysis {
   fakeScore: number
   riskLevel: string
@@ -59,5 +71,10 @@ export interface NewsDetailPayload {
   suggestions?: string[]
   dimensions?: Record<string, number> | null
   latestAnalysis?: NewsDetailLatestAnalysis | null
+  /** 12 维特征 + 模型 FakeScore（与 credibilityScore 可能口径不同） */
+  fakeScoreModel?: NewsDetailFakeScoreModel | null
+  /** pending：后台通义抽取中；ready/failed：终态（旧数据无此字段表示未走新流程） */
+  fakeScoreModelStatus?: 'pending' | 'ready' | 'failed' | null
+  fakeScoreModelError?: string | null
   rawWorkflow?: Record<string, unknown> | null
 }

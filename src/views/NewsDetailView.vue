@@ -1,7 +1,9 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { fetchNewsDetail, fetchNewsList } from '../api/news'
+import { fetchNewsDetail, fetchNewsList, postNewsFakeScoreModel } from '../api/news'
+import { FAKE_SCORE_BETA, FAKE_SCORE_FEATURE_ORDER } from '../constants/fakeScoreModelExplain'
+import { newsPortalPicsumPlaceholder } from '../utils/newsFallbackImage'
 import NewsDetailToolbar from '../components/news-detail/NewsDetailToolbar.vue'
 import NewsDetailSkeleton from '../components/news-detail/NewsDetailSkeleton.vue'
 
@@ -15,10 +17,83 @@ const related = ref([])
 const relatedStart = ref(0)
 const relatedPageSize = ref(3)
 const fontStep = ref(1)
-/** 原文图 URL 加载失败（如海外 CDN 不可达）时改用与门户大屏一致的 picsum 占位 */
+/** 原文图缺失或加载失败时，与门户大屏焦点区相同：picsum 固定 seed（见 newsFallbackImage） */
 const heroImageFallback = ref(false)
 /** 浏览器书签引导层（网页无法代用户按出收藏夹，仅可提示快捷键 / 复制链接） */
 const bookmarkGuideOpen = ref(false)
+
+const apiMock = import.meta.env.VITE_USE_MOCK === 'true'
+
+const FAKE_SCORE_FEATURE_LABELS = {
+  x1: '来源不可信度',
+  x2: '媒体偏见',
+  x3: '报道差错 / 不可核验',
+  x5: '情绪煽动',
+  x6: '情绪极性极端',
+  x7: '主观性',
+  x8: '传播链深度',
+  x9: '扩散范围',
+  x10: '突发性 / 异常节奏',
+  x11: '多源不一致 / 孤证',
+  x12: '标题党',
+  x13: '语言异常',
+}
+
+const fakeScoreModelLoading = ref(false)
+/** 12 维模型：详情区（特征表 / 重要性 / 说明）默认收起 */
+const fakeScorePanelOpen = ref(false)
+
+/** 工作流返回后后台计算 FakeScore 时自动轮询详情 */
+let fakeScorePollTimer = null
+let fakeScorePollCount = 0
+const FAKE_SCORE_POLL_MAX = 100
+const FAKE_SCORE_POLL_MS = 1200
+
+function stopFakeScorePolling() {
+  if (fakeScorePollTimer != null) {
+    clearInterval(fakeScorePollTimer)
+    fakeScorePollTimer = null
+  }
+  fakeScorePollCount = 0
+}
+
+async function refreshFakeScoreFieldsFromApi() {
+  const id = route.params.id
+  if (id == null || id === '' || detail.value == null) return
+  try {
+    const data = await fetchNewsDetail(id)
+    if (!detail.value || String(detail.value.id) !== String(data.id)) return
+    detail.value = {
+      ...detail.value,
+      fakeScoreModel: data.fakeScoreModel,
+      fakeScoreModelStatus: data.fakeScoreModelStatus,
+      fakeScoreModelError: data.fakeScoreModelError,
+      rawWorkflow: data.rawWorkflow,
+    }
+    if (data.fakeScoreModelStatus !== 'pending') {
+      stopFakeScorePolling()
+    }
+  } catch {
+    /* 轮询容错 */
+  }
+}
+
+function maybeStartFakeScorePolling() {
+  if (apiMock) return
+  if (!detail.value) return
+  if (detail.value.fakeScoreModelStatus !== 'pending') return
+  if (fakeScorePollTimer != null) return
+  fakeScorePollCount = 0
+  void refreshFakeScoreFieldsFromApi()
+  fakeScorePollTimer = setInterval(() => {
+    fakeScorePollCount += 1
+    if (fakeScorePollCount > FAKE_SCORE_POLL_MAX) {
+      stopFakeScorePolling()
+      return
+    }
+    void refreshFakeScoreFieldsFromApi()
+  }, FAKE_SCORE_POLL_MS)
+}
 
 function asDate(value) {
   if (!value) return null
@@ -104,6 +179,56 @@ const fakePct = computed(() => {
   return (clamped / 10) * 100
 })
 
+const modelFakeBarPct = computed(() => {
+  const n = Number(detail.value?.fakeScoreModel?.fakeScore)
+  if (Number.isNaN(n)) return null
+  return Math.min(100, Math.max(0, n))
+})
+
+function fmtFeature01(v) {
+  const n = Number(v)
+  if (Number.isNaN(n)) return '—'
+  return n.toFixed(3)
+}
+
+function fmtModelScalar(v, digits = 4) {
+  const n = Number(v)
+  if (Number.isNaN(n)) return '—'
+  return n.toFixed(digits)
+}
+
+async function runFakeScoreModel(force = false) {
+  const id = route.params.id
+  if (id == null || id === '') return
+  fakeScoreModelLoading.value = true
+  try {
+    const data = await postNewsFakeScoreModel(id, { force })
+    if (!detail.value) return
+    if (data && typeof data === 'object' && data.status === 'pending') {
+      detail.value = {
+        ...detail.value,
+        fakeScoreModelStatus: 'pending',
+        fakeScoreModelError: null,
+      }
+      maybeStartFakeScorePolling()
+      return
+    }
+    if (data && typeof data === 'object' && data.fakeScore != null) {
+      detail.value = {
+        ...detail.value,
+        fakeScoreModel: data,
+        fakeScoreModelStatus: 'ready',
+        fakeScoreModelError: null,
+      }
+      stopFakeScorePolling()
+    }
+  } catch (e) {
+    window.alert(e?.message || String(e))
+  } finally {
+    fakeScoreModelLoading.value = false
+  }
+}
+
 function fmtMsBool(v) {
   if (v === true) return '是'
   if (v === false) return '否'
@@ -145,16 +270,13 @@ const primaryHeroImageUrl = computed(() => {
   return String(u).trim()
 })
 
-/** 与 NewsPortalScreenView 一致：picsum 按新闻 id 固定 seed，避免每次刷新变图 */
-function picsumPlaceholder(seedSuffix, w, h) {
-  return `https://picsum.photos/seed/${seedSuffix}/${w}/${h}`
-}
-
 const heroImageSrc = computed(() => {
   if (!detail.value?.id) return ''
   const id = detail.value.id
-  const placeholder = picsumPlaceholder(`truthlens-nd-${id}`, 800, 520)
-  if (!primaryHeroImageUrl.value || heroImageFallback.value) return placeholder
+  /** 与 NewsPortalScreenView 焦点条同一套：seed tlstrip* + 960×720 */
+  if (!primaryHeroImageUrl.value || heroImageFallback.value) {
+    return newsPortalPicsumPlaceholder(`tlstrip${id}`, 960, 720)
+  }
   return primaryHeroImageUrl.value
 })
 
@@ -187,6 +309,7 @@ async function loadRelated(current) {
 }
 
 async function loadDetail() {
+  stopFakeScorePolling()
   loading.value = true
   error.value = ''
   detail.value = null
@@ -300,7 +423,23 @@ async function copyPlain(text) {
 watch(
   () => route.params.id,
   () => {
+    fakeScorePanelOpen.value = false
     loadDetail()
+  },
+)
+
+watch(
+  () => [detail.value?.id, detail.value?.fakeScoreModelStatus, loading.value, apiMock],
+  () => {
+    if (apiMock || loading.value || !detail.value) {
+      stopFakeScorePolling()
+      return
+    }
+    if (detail.value.fakeScoreModelStatus === 'pending') {
+      maybeStartFakeScorePolling()
+    } else {
+      stopFakeScorePolling()
+    }
   },
 )
 
@@ -311,6 +450,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopFakeScorePolling()
   window.removeEventListener('resize', updateRelatedPageSize)
   window.removeEventListener('keydown', onEscapeCloseBookmark)
 })
@@ -459,7 +599,10 @@ watch(bookmarkGuideOpen, (open) => {
                       @error="onHeroImageError"
                     />
                     <p v-if="heroImageIsPlaceholder && primaryHeroImageUrl" class="nd-image-hint">
-                      原图链接在当前网络下无法加载，已显示预览占位图
+                      原图链接在当前网络下无法加载，已使用与新闻门户大屏相同的预览占位图
+                    </p>
+                    <p v-else-if="heroImageIsPlaceholder && !primaryHeroImageUrl" class="nd-image-hint">
+                      本条未提供插图地址，已使用与新闻门户大屏相同的预览占位图
                     </p>
                   </div>
                 </div>
@@ -511,6 +654,191 @@ watch(bookmarkGuideOpen, (open) => {
                   </li>
                 </ul>
               </template>
+            </section>
+
+            <section class="nd-card card nd-fsm-card">
+              <div class="nd-fs-shell">
+                <div class="nd-fs-title-row">
+                  <h3 class="nd-fs-title">12 维 FakeScore 模型</h3>
+                  <div v-if="!apiMock" class="nd-fs-title-actions">
+                    <button
+                      v-if="
+                        detail.fakeScoreModel?.fakeScore != null &&
+                        !Number.isNaN(Number(detail.fakeScoreModel.fakeScore))
+                      "
+                      type="button"
+                      class="nd-fsm-btn nd-fsm-btn--ghost nd-fsm-btn--compact"
+                      :disabled="fakeScoreModelLoading || detail.fakeScoreModelStatus === 'pending'"
+                      @click="runFakeScoreModel(true)"
+                    >
+                      {{ fakeScoreModelLoading ? '计算中…' : '强制重新计算' }}
+                    </button>
+                    <button
+                      v-else-if="detail.fakeScoreModelStatus !== 'pending'"
+                      type="button"
+                      class="nd-fsm-btn nd-fsm-btn--compact"
+                      :disabled="fakeScoreModelLoading"
+                      @click="runFakeScoreModel(false)"
+                    >
+                      {{ fakeScoreModelLoading ? '计算中…' : '补算模型评分' }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="detail.fakeScoreModelStatus === 'pending'" class="nd-fsm-pending nd-fsm-pending--compact" role="status">
+                  <div class="nd-fsm-spinner nd-fsm-spinner--sm" aria-hidden="true" />
+                  <p class="nd-fsm-pending-title nd-fsm-pending-title--compact">正在计算 FakeScore 模型…</p>
+                  <p class="nd-muted nd-fsm-pending-hint nd-fsm-pending-hint--compact">
+                    工作流已就绪，通义抽取约需数秒；将自动刷新。
+                  </p>
+                </div>
+                <div
+                  v-else-if="detail.fakeScoreModelStatus === 'failed' || detail.fakeScoreModel?.error"
+                  class="nd-fsm-err nd-fsm-err--compact"
+                >
+                  <p class="nd-muted nd-fsm-err-txt">
+                    模型计算失败：{{ detail.fakeScoreModelError || detail.fakeScoreModel?.error || '未知错误' }}
+                  </p>
+                  <div v-if="!apiMock" class="nd-fsm-actions nd-fsm-actions--tight">
+                    <button
+                      type="button"
+                      class="nd-fsm-btn nd-fsm-btn--compact"
+                      :disabled="fakeScoreModelLoading"
+                      @click="runFakeScoreModel(true)"
+                    >
+                      {{ fakeScoreModelLoading ? '重试中…' : '重试计算' }}
+                    </button>
+                  </div>
+                </div>
+                <div
+                  v-else-if="
+                    detail.fakeScoreModel?.fakeScore != null &&
+                    !Number.isNaN(Number(detail.fakeScoreModel.fakeScore))
+                  "
+                  class="nd-fs-ready"
+                >
+                  <div class="nd-fs-core">
+                    <div class="nd-cred-block nd-fs-core-block">
+                      <span class="nd-cred-label">模型 FakeScore</span>
+                      <div class="nd-cred-num-row nd-cred-num-row--tight">
+                        <strong class="nd-cred-num nd-cred-num--fs">{{
+                          fmtModelScalar(detail.fakeScoreModel.fakeScore, 4)
+                        }}</strong>
+                        <span class="nd-cred-scale">/ 100</span>
+                      </div>
+                      <div v-if="modelFakeBarPct != null" class="nd-bar nd-bar--fs">
+                        <i class="nd-bar-fill nd-bar-fill--fake" :style="{ width: modelFakeBarPct + '%' }" />
+                      </div>
+                    </div>
+                    <div class="nd-fs-core-side">
+                      <div class="nd-fs-side-cell">
+                        <span class="nd-cred-label">P(fake)</span>
+                        <strong class="nd-fs-scalar">{{ fmtModelScalar(detail.fakeScoreModel.pFake, 4) }}</strong>
+                      </div>
+                      <div class="nd-fs-side-cell">
+                        <span class="nd-cred-label">f(x)</span>
+                        <strong class="nd-fs-scalar">{{ fmtModelScalar(detail.fakeScoreModel.f, 4) }}</strong>
+                      </div>
+                      <div v-if="detail.fakeScoreModel.computedAt" class="nd-fs-side-cell nd-fs-side-cell--time">
+                        <span class="nd-cred-label">计算时间</span>
+                        <span class="nd-fs-time-val">{{ formatTime(detail.fakeScoreModel.computedAt) }}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    class="nd-fs-toggle"
+                    :aria-expanded="fakeScorePanelOpen"
+                    @click="fakeScorePanelOpen = !fakeScorePanelOpen"
+                  >
+                    <span
+                      class="nd-fs-chevron"
+                      :class="{ 'nd-fs-chevron--open': fakeScorePanelOpen }"
+                      aria-hidden="true"
+                      >▶</span
+                    >
+                    {{ fakeScorePanelOpen ? '收起详情' : '展开详情' }}
+                  </button>
+
+                  <div v-show="fakeScorePanelOpen" class="nd-fs-panel">
+                    <details v-if="detail.fakeScoreModel.features" class="nd-fsm-acc">
+                      <summary class="nd-fsm-acc-sum">各维度信号强度（本新闻）</summary>
+                      <div class="nd-fsm-acc-body">
+                        <p class="nd-fsm-acc-hint">
+                          下列数值在 0～1 之间，<strong>越高</strong>通常表示该方面越需要您<strong>谨慎核实</strong>，仅作阅读参考，不构成对事实真假的最终判定。
+                        </p>
+                        <table class="nd-fsm-table nd-fsm-table--compact">
+                          <thead>
+                            <tr>
+                              <th scope="col">维度</th>
+                              <th scope="col">信号强度</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="key in FAKE_SCORE_FEATURE_ORDER" :key="key">
+                              <th scope="row">{{ FAKE_SCORE_FEATURE_LABELS[key] }}</th>
+                              <td>{{ fmtFeature01(detail.fakeScoreModel.features[key]) }}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </details>
+
+                    <details class="nd-fsm-acc">
+                      <summary class="nd-fsm-acc-sum">各维度重要性（系统统一）</summary>
+                      <div class="nd-fsm-acc-body nd-fsm-acc-body--beta">
+                        <p class="nd-fsm-acc-hint">
+                          下表表示<strong>每个维度在综合分里的大致份量</strong>，所有新闻共用同一套，方便横向对比；与上一栏「本新闻的信号强度」不是同一类数字。
+                        </p>
+                        <div class="nd-fs-beta-grid" role="list">
+                          <div
+                            v-for="key in FAKE_SCORE_FEATURE_ORDER"
+                            :key="'beta-' + key"
+                            class="nd-fs-beta-chip"
+                            role="listitem"
+                          >
+                            <span class="nd-fs-beta-name">{{ FAKE_SCORE_FEATURE_LABELS[key] }}</span>
+                            <span class="nd-fs-beta-num">{{ FAKE_SCORE_BETA[key]?.toFixed(2) ?? '—' }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </details>
+
+                    <details class="nd-fsm-acc">
+                      <summary class="nd-fsm-acc-sum">关于本参考分</summary>
+                      <div class="nd-fsm-acc-body nd-fsm-acc-body--explain">
+                        <ul class="nd-fsm-explain-ul nd-fsm-explain-ul--compact nd-fsm-user-bullets">
+                          <li>
+                            本分数在 0～100 之间，数字<strong>越高</strong>，表示模型认为内容越接近「需要警惕的虚假或误导风险」，请您结合标题、正文与上方<strong>事实要点</strong>综合判断。
+                          </li>
+                          <li>
+                            页面上方的<strong>可信指数</strong>来自另一路评估，与这里的参考分<strong>可能不完全一致</strong>，属于正常现象，不必强行对齐。
+                          </li>
+                          <li>
+                            若正文或来源有更新，可点击「强制重新计算」刷新本参考分与上方各表。
+                          </li>
+                        </ul>
+                      </div>
+                    </details>
+                  </div>
+                </div>
+                <div v-else class="nd-fsm-empty nd-fsm-empty--compact">
+                  <p class="nd-muted nd-fsm-empty-txt">
+                    暂无模型结果。点击下方将仅根据本条新闻在库里的正文与来源调用通义并写回（有百炼分析记录时会同步合并）。
+                  </p>
+                  <div v-if="!apiMock" class="nd-fsm-actions nd-fsm-actions--tight">
+                    <button
+                      type="button"
+                      class="nd-fsm-btn nd-fsm-btn--compact"
+                      :disabled="fakeScoreModelLoading"
+                      @click="runFakeScoreModel(false)"
+                    >
+                      {{ fakeScoreModelLoading ? '计算中…' : '补算模型评分' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </section>
 
             <section v-if="detail.latestAnalysis" class="nd-card card nd-wf-fields">
@@ -659,7 +987,7 @@ watch(bookmarkGuideOpen, (open) => {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .nd-left,
@@ -1033,6 +1361,588 @@ watch(bookmarkGuideOpen, (open) => {
   background: linear-gradient(90deg, #f97316, #ef4444);
 }
 
+.nd-bar-fill--fake {
+  background: linear-gradient(90deg, #f59e0b, #dc2626);
+}
+
+.nd-bar--tight {
+  margin-top: 8px;
+}
+
+.nd-bar--fs {
+  height: 6px;
+  margin-top: 6px;
+}
+
+.nd-fsm-card.card {
+  padding: 14px 16px;
+}
+
+.nd-fs-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nd-fs-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.nd-fs-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+}
+
+.nd-fs-title-actions {
+  flex-shrink: 0;
+}
+
+.nd-fs-ready {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nd-fs-core {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
+@media (max-width: 560px) {
+  .nd-fs-core {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nd-fs-core-block {
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.nd-cred-num-row--tight {
+  margin-bottom: 6px;
+}
+
+.nd-cred-num--fs {
+  font-size: 22px;
+}
+
+.nd-fs-core-side {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+  align-content: start;
+}
+
+.nd-fs-side-cell {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.nd-fs-side-cell .nd-cred-label {
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.nd-fs-side-cell--time {
+  grid-column: 1 / -1;
+}
+
+.nd-fs-scalar {
+  display: block;
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+  line-height: 1.2;
+}
+
+.nd-fs-time-val {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+
+.nd-fs-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin: 0;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.nd-fs-toggle:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.nd-fs-chevron {
+  display: inline-block;
+  font-size: 9px;
+  line-height: 1;
+  color: #94a3b8;
+  transition: transform 0.15s ease;
+}
+
+.nd-fs-chevron--open {
+  transform: rotate(90deg);
+}
+
+.nd-fs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.nd-fsm-acc {
+  margin: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.nd-fsm-acc-sum {
+  list-style: none;
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #334155;
+  background: #f8fafc;
+}
+
+.nd-fsm-acc-sum::-webkit-details-marker {
+  display: none;
+}
+
+.nd-fsm-acc-sum::before {
+  content: '▶';
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 9px;
+  color: #94a3b8;
+  transition: transform 0.15s ease;
+  vertical-align: 0.05em;
+}
+
+.nd-fsm-acc[open] > .nd-fsm-acc-sum::before {
+  transform: rotate(90deg);
+}
+
+.nd-fsm-acc-sum code {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.nd-fsm-acc-body {
+  padding: 6px 10px 8px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.nd-fsm-acc-body--explain .nd-fsm-explain-ul {
+  color: #334155;
+}
+
+.nd-fsm-acc-body--beta {
+  padding-bottom: 8px;
+}
+
+.nd-fs-beta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 10px;
+}
+
+@media (max-width: 520px) {
+  .nd-fs-beta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.nd-fs-beta-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  font-size: 11px;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.nd-fs-beta-name {
+  color: #475569;
+  font-weight: 600;
+}
+
+.nd-fs-beta-num {
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+}
+
+.nd-fsm-user-bullets {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.nd-fsm-acc-hint {
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #64748b;
+}
+
+.nd-fsm-lead {
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #475569;
+}
+
+.nd-fsm-explain-ul--compact {
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0 0 8px;
+  padding-left: 1rem;
+}
+
+.nd-fsm-explain--compact {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.nd-fsm-explain--compact .nd-fsm-explain-title {
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.nd-fsm-table--compact th,
+.nd-fsm-table--compact td {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.nd-fsm-table--compact thead th {
+  font-size: 10px;
+  padding: 4px 8px;
+}
+
+.nd-fsm-table--compact tbody th {
+  width: auto;
+  max-width: 65%;
+}
+
+.nd-fsm-pending--compact {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: center;
+  text-align: left;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.nd-fsm-spinner--sm {
+  width: 22px;
+  height: 22px;
+  border-width: 2px;
+}
+
+.nd-fsm-pending-title--compact {
+  font-size: 13px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nd-fsm-pending-hint--compact {
+  width: 100%;
+  flex-basis: 100%;
+  font-size: 11px;
+  max-width: none;
+  line-height: 1.45;
+}
+
+.nd-fsm-err--compact {
+  padding: 4px 0 2px;
+}
+
+.nd-fsm-err-txt,
+.nd-fsm-empty-txt {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.nd-fsm-actions--tight {
+  gap: 8px;
+}
+
+.nd-fsm-empty--compact {
+  gap: 8px;
+}
+
+.nd-fsm-pending {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  padding: 12px 0 8px;
+}
+
+.nd-fsm-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #b91c1c;
+  border-radius: 50%;
+  animation: nd-fsm-spin 0.72s linear infinite;
+}
+
+@keyframes nd-fsm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.nd-fsm-pending-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.nd-fsm-pending-hint {
+  margin: 0;
+  max-width: 28rem;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.nd-fsm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.nd-fsm-kpis {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .nd-fsm-kpis {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nd-fsm-kpi {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+}
+
+.nd-fsm-kpi--wide {
+  grid-column: span 1;
+}
+
+.nd-fsm-kpi-k {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.nd-fsm-kpi-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.nd-fsm-kpi-v {
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+}
+
+.nd-fsm-kpi-u {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.nd-fsm-meta {
+  margin: 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.nd-fsm-explain {
+  margin: 12px 0 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #422006;
+}
+
+.nd-fsm-explain-title {
+  margin: 0 0 8px;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.nd-fsm-explain-ul {
+  margin: 0 0 10px;
+  padding-left: 1.15rem;
+}
+
+.nd-fsm-explain-ul code {
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.nd-fsm-details {
+  margin: 0;
+  font-size: 12px;
+}
+
+.nd-fsm-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #b45309;
+  margin-bottom: 6px;
+}
+
+.nd-fsm-table--beta {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.nd-fsm-table-caption {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.nd-fsm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.nd-fsm-table th,
+.nd-fsm-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.nd-fsm-table thead th {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  background: #f8fafc;
+}
+
+.nd-fsm-table tbody th {
+  font-weight: 500;
+  color: #334155;
+  width: 58%;
+}
+
+.nd-fsm-table tbody td {
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+}
+
+.nd-fsm-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nd-fsm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.nd-fsm-actions--footer {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.nd-fsm-btn {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #fff;
+}
+
+.nd-fsm-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.nd-fsm-btn--ghost {
+  background: #fff;
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+}
+
+.nd-fsm-err .nd-muted {
+  margin: 0;
+}
+
 .nd-verdict {
   margin-top: 16px;
   padding: 12px 14px;
@@ -1306,6 +2216,24 @@ watch(bookmarkGuideOpen, (open) => {
   border-color: #d6d3d1;
 }
 
+.nd-fsm-card-head {
+  align-items: center;
+}
+
+.nd-fsm-card-head-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.nd-fsm-head-actions {
+  flex-shrink: 0;
+}
+
+.nd-fsm-btn--compact {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
 .nd-hero-img {
   width: 100%;
   min-height: 220px;
@@ -1313,7 +2241,7 @@ watch(bookmarkGuideOpen, (open) => {
   object-fit: cover;
   object-position: center;
   display: block;
-  background: #e2e8f0;
+  background: transparent;
 }
 
 .nd-image-hint {

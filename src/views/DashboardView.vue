@@ -346,6 +346,30 @@ function isChinaRegion(name, raw) {
 }
 
 /**
+ * world-atlas 将台湾单独成区；业务上与中国大陆同风险填色，避免「中国红了台湾不亮」。
+ * 取两岸条目中的最大风险值，并保证 China / Taiwan 各有一条同名数据供 map 系列着色。
+ */
+function unifyChinaTaiwanMapData(mapData) {
+  const list = Array.isArray(mapData) ? mapData.map((d) => ({ ...d })) : []
+  const iCn = list.findIndex((d) => String(d.name) === 'China')
+  const iTw = list.findIndex((d) => String(d.name) === 'Taiwan')
+  if (iCn < 0 && iTw < 0) return list
+
+  const base = iCn >= 0 ? list[iCn] : list[iTw]
+  const unified = Math.max(iCn >= 0 ? num(list[iCn].value) : 0, iTw >= 0 ? num(list[iTw].value) : 0)
+  const rawCountry = base.rawCountry
+  const newsCount = base.newsCount
+
+  if (iCn >= 0) list[iCn] = { ...list[iCn], value: unified }
+  else list.push({ name: 'China', value: unified, rawCountry, newsCount })
+
+  if (iTw >= 0) list[iTw] = { ...list[iTw], value: unified, rawCountry: rawCountry || list[iTw].rawCountry, newsCount }
+  else list.push({ name: 'Taiwan', value: unified, rawCountry, newsCount })
+
+  return list
+}
+
+/**
  * 舆图层：中枢涟漪 + 海外舆情节点 + 涉华传播弧线（与地图填色数据同源）
  */
 function buildGeoOverlaySeries(mapData, vmax) {
@@ -502,7 +526,7 @@ function applyMapChart(worldGeo) {
   ensureWorldMapRegistered()
   if (!chartMap) chartMap = echarts.init(elMap.value, null, { renderer: 'canvas' })
   const cr = getFirst(screen.value, ['countryRisk', 'country_risk'], []) || []
-  const mapData = buildMapSeriesData(cr, worldGeo)
+  const mapData = unifyChinaTaiwanMapData(buildMapSeriesData(cr, worldGeo))
   const values = mapData.map((d) => d.value)
   const vmax = Math.max(10, ...values, 1)
   const { effectData, linesData } = buildGeoOverlaySeries(mapData, vmax)
@@ -547,6 +571,14 @@ function applyMapChart(worldGeo) {
         regions: [
           {
             name: 'China',
+            itemStyle: {
+              areaColor: 'rgba(185, 28, 28, 0.2)',
+              borderColor: 'rgba(252, 165, 165, 0.75)',
+              borderWidth: 1.1,
+            },
+          },
+          {
+            name: 'Taiwan',
             itemStyle: {
               areaColor: 'rgba(185, 28, 28, 0.2)',
               borderColor: 'rgba(252, 165, 165, 0.75)',
