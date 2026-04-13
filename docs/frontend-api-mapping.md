@@ -22,8 +22,8 @@
   - 入参：`{ items: [{ text }, { text }] }`
   - 字段映射：`consistencyScore/conflicts/sourceAuthorityDiff/recommendation`
 - `ProfileView`:
-  - 调用：`GET /profile/me` + `GET /profile/history`
-  - 字段映射：`username/preferences/stats` 和历史列表
+  - 调用：`GET /profile/me`、`GET /profile/history`、`PUT /profile/me`（用户名 / 邮箱 / 头像 URL / 改密）、`POST /profile/me/avatar`（`multipart/form-data` 字段名 `file`）
+  - 字段映射：`userId/username/email/avatarUrl/preferences/stats` 与历史列表；头像静态资源开发环境经 Vite 代理 `/uploads` → 后端
 
 ## 错误与鉴权处理
 - 统一拦截器在 `src/api/http.js` 处理：

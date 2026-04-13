@@ -86,7 +86,10 @@ export const mockMultiAnalysis = {
 }
 
 export const mockProfile = {
+  userId: 1,
   username: 'demo',
+  email: 'demo@example.com',
+  avatarUrl: null,
   preferences: ['国际政治', '科技', '财经', '深度阅读', '风险复核'],
   stats: {
     viewed: 126,

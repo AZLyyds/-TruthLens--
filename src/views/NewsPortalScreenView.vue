@@ -144,12 +144,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="portal-screen portal-body">
-    <main class="page-wrap">
-      <h1 class="page-title">海外新闻</h1>
-      <p class="page-desc">焦点区为居中轮播：左右键循环切换，并自动向右切换；下方为要闻列表。</p>
-
-      <section aria-labelledby="strip-heading">
+  <div class="portal-screen portal-body page page-portal-screen">
+    <main class="page-wrap portal-screen-inner">
+      <section class="portal-screen-section portal-screen-section--plain anim-up delay-1" aria-labelledby="strip-heading">
         <h2 id="strip-heading" class="portal-section-title">焦点滚动</h2>
         <div
           class="focus-carousel"
@@ -198,7 +195,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section aria-labelledby="list-heading">
+      <section class="portal-screen-section anim-up delay-2" aria-labelledby="list-heading">
         <h2 id="list-heading" class="portal-section-title">要闻列表</h2>
         <div class="news-feed">
           <article v-for="item in listItems" :key="String(item.id ?? item.img)" class="news-list-item" @click="goNewsDetail(item)">
@@ -215,37 +212,41 @@ onBeforeUnmount(() => {
           </article>
         </div>
       </section>
-
-      <p class="page-footer-note">演示页（移植自 `html_improved/portal.html`）。</p>
     </main>
   </div>
 </template>
 
 <style scoped>
 .portal-screen {
-  --theme-red: #90080e;
-  --theme-red-hover: #7a070c;
+  --theme-red: #b91c1c;
+  --theme-red-hover: #991b1b;
   --red-100: #fee2e2;
   --red-50: #fef2f2;
-  --bg: #f4f4f3;
+  --bg: transparent;
   --card: #ffffff;
   --text: #1c1917;
   --text-hover: #0c0a09;
   --muted: #78716c;
   --border: #e7e5e4;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.08);
-  --radius: 10px;
-  --radius-sm: 6px;
+  --shadow: 0 10px 25px rgba(127, 29, 29, 0.08);
+  --shadow-float: 0 12px 32px rgba(28, 25, 23, 0.1);
+  --radius: 18px;
+  --radius-sm: 12px;
   --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
 
-  margin: 0;
-  font-family: 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  margin: 0 auto;
+  width: 100%;
+  font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   color: var(--text);
-  background: var(--bg);
-  line-height: 1.5;
+  background: transparent;
+  line-height: 1.55;
   min-height: 100vh;
   min-height: 100dvh;
+}
+
+.portal-screen-inner {
+  width: 100%;
+  margin: 0 auto;
 }
 
 .portal-screen :deep(a) {
@@ -330,31 +331,46 @@ onBeforeUnmount(() => {
 }
 
 .page-wrap {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 22px 18px 40px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .page-title {
   margin: 0 0 8px;
-  font-size: 1.65rem;
+  font-size: clamp(1.45rem, 2.2vw, 1.75rem);
   font-weight: 800;
+  letter-spacing: -0.02em;
   color: var(--text);
 }
 
 .page-desc {
-  margin: 0 0 22px;
+  margin: 0 0 8px;
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 15px;
+  line-height: 1.55;
+  max-width: 62ch;
 }
 
-.page-footer-note {
-  margin-top: 28px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-  font-size: 0.8rem;
-  color: var(--muted);
-  text-align: center;
+.portal-screen-section {
+  padding: 18px 20px 20px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.portal-screen-section--plain {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
 }
 
 .portal-section-title {
@@ -422,8 +438,8 @@ onBeforeUnmount(() => {
   min-width: 0;
   overflow: hidden;
   border: none;
-  background: #0c0a09;
-  border-radius: 14px;
+  background: transparent;
+  border-radius: var(--radius);
   box-shadow: var(--shadow-float);
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
@@ -445,8 +461,8 @@ onBeforeUnmount(() => {
 }
 
 .focus-slide-card {
-  margin: 0 auto;
-  max-width: 720px;
+  margin: 0;
+  max-width: none;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -465,18 +481,17 @@ onBeforeUnmount(() => {
   position: relative;
   margin: 0;
   width: 100%;
-  min-height: 360px;
-  max-height: 52vh;
+  height: clamp(360px, 56vh, 640px);
   overflow: hidden;
-  background: #292524;
+  background: transparent;
 }
 
 .focus-slide-figure img {
   width: 100%;
   height: 100%;
-  min-height: 360px;
   object-fit: cover;
-  transform: scale(1.01);
+  object-position: center top;
+  transform: scale(1.02);
   transition: transform 0.8s var(--ease-ios);
 }
 
@@ -541,29 +556,29 @@ onBeforeUnmount(() => {
 .news-feed {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .news-list-item {
   display: grid;
   grid-template-columns: 132px 1fr;
-  gap: 14px;
-  padding: 14px 4px 14px 2px;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
-  box-shadow: none;
-  transition: border-color 0.2s ease;
+  gap: 16px;
+  padding: 14px 14px;
+  background: linear-gradient(160deg, #ffffff, #fafaf9);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
   cursor: pointer;
 }
 
-.news-list-item:last-child {
-  border-bottom: none;
-}
-
 .news-list-item:hover {
-  border-bottom-color: #d6d3d1;
+  border-color: #fca5a5;
+  box-shadow: 0 10px 24px rgba(185, 28, 28, 0.08);
+  transform: translateY(-2px);
 }
 
 .news-list-item:hover .news-list-body h3 {
@@ -576,7 +591,7 @@ onBeforeUnmount(() => {
 
 .news-list-thumb {
   margin: 0;
-  border-radius: var(--radius-sm);
+  border-radius: 12px;
   overflow: hidden;
   aspect-ratio: 4 / 3;
   background: #e7e5e4;
@@ -594,24 +609,26 @@ onBeforeUnmount(() => {
 }
 
 .news-list-body h3 {
-  margin: 0 0 8px;
-  font-size: 1.02rem;
-  font-weight: 700;
-  line-height: 1.35;
+  margin: 0 0 10px;
+  font-size: 1.08rem;
+  font-weight: 750;
+  line-height: 1.4;
+  letter-spacing: -0.015em;
   color: var(--text);
   transition: color 0.2s ease;
 }
 
 .news-list-meta {
-  font-size: 0.75rem;
-  color: #a8a29e;
+  font-size: 13px;
+  color: #78716c;
   margin-bottom: 8px;
+  font-weight: 500;
 }
 
 .news-list-abstract {
   margin: 0;
-  font-size: 0.88rem;
-  color: var(--muted);
+  font-size: 14px;
+  color: #57534e;
   line-height: 1.55;
   display: -webkit-box;
   -webkit-line-clamp: 3;

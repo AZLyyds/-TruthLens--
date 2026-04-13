@@ -16,6 +16,10 @@ export default defineConfig({
         timeout: 360000,
         proxyTimeout: 360000,
       },
+      '/uploads': {
+        target: 'http://127.0.0.1:3000',
+        changeOrigin: true,
+      },
     },
   },
 })

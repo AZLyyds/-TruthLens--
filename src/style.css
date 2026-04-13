@@ -1,6 +1,10 @@
 :root {
   /* 全局默认改为偏红主题（监控大屏使用自己的深色样式） */
-  --bg: #f4f4f3;
+  --font-ui: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'Sarasa Gothic SC', 'Consolas', monospace;
+  --text-base: 17px;
+  --text-lead: 1.58;
+  --bg: transparent;
   --card: #ffffff;
   --text: #1c1917;
   --muted: #78716c;
@@ -10,6 +14,17 @@
   --warn: #b45309;
   --border: #e7e5e4;
   --shadow: 0 10px 25px rgba(127, 29, 29, 0.08);
+  /* 评分档位：低/中/高 — 用于可信指数（高分为好）与 FakeScore（高分为差） */
+  --score-tier-good: #15803d;
+  --score-tier-good-bg: rgba(22, 163, 74, 0.12);
+  --score-tier-mid: #b45309;
+  --score-tier-mid-bg: rgba(245, 158, 11, 0.15);
+  --score-tier-bad: #b91c1c;
+  --score-tier-bad-bg: rgba(185, 28, 28, 0.12);
+  /* 与「个人中心」对齐的页面留白（左右/上下整体边距） */
+  --page-pad-y-top: 28px;
+  --page-pad-y-bottom: 48px;
+  --page-pad-x: clamp(20px, 3.6vw, 40px);
 }
 
 * {
@@ -24,16 +39,22 @@ body,
 
 html {
   background-attachment: fixed;
+  scrollbar-gutter: stable;
+}
+
+html.tl-modal-open {
+  overflow: hidden;
 }
 
 body {
   margin: 0;
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: var(--text-lead);
   color: var(--text);
-  background:
-    radial-gradient(circle at 10% 0%, #fff7ed 0%, transparent 38%),
-    radial-gradient(circle at 100% 0%, #fee2e2 0%, transparent 36%),
-    var(--bg);
+  -webkit-font-smoothing: antialiased;
+  /* 全页背景图 + 渐变由 App.vue 全局样式统一设置，便于替换 public/images/truthlens-page-bg.png */
+  background-color: transparent;
   background-attachment: fixed;
 }
 
@@ -43,13 +64,27 @@ body {
 }
 
 .page {
-  max-width: 1240px;
+  max-width: 1180px;
   min-height: 100vh;
   min-height: 100dvh;
   margin: 0 auto;
-  padding: 24px 20px 36px;
+  padding: var(--page-pad-y-top) var(--page-pad-x) var(--page-pad-y-bottom);
   display: flex;
   flex-direction: column;
+  background: transparent;
+}
+
+/* 控制板：与全局留白一致，加宽内容区用子级 max-width（如 .portal-pro） */
+.page.page-portal {
+  max-width: none;
+}
+
+/* 新闻门户：与 .page 同边距，可加宽主列 */
+.page.page-portal-screen {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--page-pad-y-top) var(--page-pad-x) var(--page-pad-y-bottom);
+  box-sizing: border-box;
 }
 
 .card {
@@ -302,8 +337,8 @@ h3 {
 .desc {
   margin: 6px 0 14px;
   color: var(--muted);
-  line-height: 1.5;
-  font-size: 14px;
+  line-height: 1.55;
+  font-size: 16px;
 }
 
 .news-grid {
@@ -667,19 +702,53 @@ strong.warn {
   margin-top: 16px;
   height: 132px;
   display: flex;
-  align-items: end;
-  gap: 8px;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px 8px 0;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(254, 242, 242, 0.65) 0%, #fafaf9 100%);
+  border: 1px solid rgba(254, 202, 202, 0.45);
 }
 
 .trend-line span {
   flex: 1;
-  background: linear-gradient(180deg, #fca5a5, #b91c1c);
-  border-radius: 6px 6px 2px 2px;
+  border-radius: 8px 8px 4px 4px;
   animation: pulseBar 2.4s ease-in-out infinite;
+  box-shadow: 0 2px 6px rgba(127, 29, 29, 0.12);
 }
 
-.trend-line span:nth-child(2n) {
-  animation-delay: 0.18s;
+.trend-line span:nth-child(1) {
+  background: linear-gradient(180deg, #fecaca, #dc2626);
+}
+
+.trend-line span:nth-child(2) {
+  background: linear-gradient(180deg, #fde68a, #d97706);
+  animation-delay: 0.12s;
+}
+
+.trend-line span:nth-child(3) {
+  background: linear-gradient(180deg, #bbf7d0, #15803d);
+  animation-delay: 0.24s;
+}
+
+.trend-line span:nth-child(4) {
+  background: linear-gradient(180deg, #fecaca, #ef4444);
+  animation-delay: 0.36s;
+}
+
+.trend-line span:nth-child(5) {
+  background: linear-gradient(180deg, #fde68a, #f59e0b);
+  animation-delay: 0.48s;
+}
+
+.trend-line span:nth-child(6) {
+  background: linear-gradient(180deg, #bbf7d0, #16a34a);
+  animation-delay: 0.6s;
+}
+
+.trend-line span:nth-child(7) {
+  background: linear-gradient(180deg, #fecaca, #dc2626);
+  animation-delay: 0.72s;
 }
 
 .tags {
@@ -729,8 +798,16 @@ strong.warn {
   height: calc(100dvh - 64px);
   max-height: calc(100dvh - 64px);
   overflow: auto;
-  padding: 10px 14px 12px;
+  padding: var(--page-pad-y-top) var(--page-pad-x) var(--page-pad-y-bottom);
   box-sizing: border-box;
+  background-color: transparent;
+}
+
+/* 长报告上下布局时随内容增高，避免底部露灰条 */
+.page.page-analysis.single-analysis:has(.single-layout--stack) {
+  height: auto;
+  max-height: none;
+  min-height: calc(100dvh - 64px);
 }
 
 @media (max-width: 1024px) {
@@ -739,7 +816,7 @@ strong.warn {
     max-height: none;
     min-height: min(100vh, 100dvh);
     overflow: visible;
-    padding: 16px 14px 24px;
+    padding: var(--page-pad-y-top) var(--page-pad-x) var(--page-pad-y-bottom);
   }
 }
 
@@ -777,25 +854,30 @@ strong.warn {
 
 .profile-top-row {
   display: grid;
-  grid-template-columns: minmax(260px, 0.9fr) 1fr;
-  gap: 12px;
-  align-items: start;
+  grid-template-columns: minmax(280px, 1fr) minmax(260px, 1fr);
+  gap: 16px;
+  align-items: stretch;
 }
 
 .overview-bottom-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 16px;
+  align-items: stretch;
 }
 
 .profile-head {
   display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  background: #fbfdff;
-  padding: 12px;
+  border-radius: 16px;
+  background: linear-gradient(165deg, #ffffff 0%, #fafaf9 100%);
+  padding: 16px 18px;
+  box-shadow: var(--shadow);
+  min-height: 100%;
 }
 
 .avatar.lg {
@@ -808,13 +890,15 @@ strong.warn {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+  align-content: stretch;
+  min-height: 100%;
 }
 
 .card-in {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px;
-  background: #fcfdff;
+  background: #fdfdfc;
 }
 
 .mini {
@@ -834,9 +918,21 @@ strong.warn {
 
 .profile-chip-board,
 .profile-trend-board {
-  padding: 14px;
-  min-height: 120px;
-  height: auto;
+  padding: 16px 16px 14px;
+  min-height: 148px;
+  height: 100%;
+  border-radius: 16px;
+  background: linear-gradient(165deg, #ffffff 0%, #fafaf9 100%);
+  box-shadow: 0 2px 12px rgba(28, 25, 23, 0.04);
+}
+
+.profile-chip-board h3,
+.profile-trend-board h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
 }
 
 .profile-history {
@@ -2281,6 +2377,17 @@ button.history-detail__collapse {
   grid-template-columns: minmax(280px, 42fr) minmax(0, 58fr);
   gap: 16px;
   align-items: stretch;
+}
+
+/* 长报告时改为上下布局，整页一滑到底 */
+.page-analysis.single-analysis .single-layout.single-layout--stack {
+  grid-template-columns: 1fr;
+}
+
+.page-analysis.single-analysis .single-layout.single-layout--stack .sa-input-wrap,
+.page-analysis.single-analysis .single-layout.single-layout--stack .single-result-card {
+  max-height: none;
+  height: auto;
 }
 
 .page-analysis.single-analysis .sa-input-wrap {

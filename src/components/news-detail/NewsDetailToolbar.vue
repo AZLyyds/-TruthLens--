@@ -21,7 +21,7 @@ defineProps({
         aria-label="加入浏览器书签"
         @click="$emit('bookmark')"
       >
-        <span class="bar-bookmark-glyph" aria-hidden="true">🔖</span>
+        <img class="bar-icon-svg" src="/logo/star.svg" alt="" aria-hidden="true" />
       </button>
       <button
         type="button"
@@ -30,7 +30,7 @@ defineProps({
         :disabled="disabledShare"
         @click="$emit('share')"
       >
-        ↗
+        <img class="bar-icon-svg" src="/logo/share.svg" alt="" aria-hidden="true" />
       </button>
       <button type="button" class="bar-export" :disabled="disabledShare" @click="$emit('export')">导出</button>
     </div>
@@ -46,12 +46,14 @@ defineProps({
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 16px;
-  margin: 0 -4px 16px;
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: saturate(180%) blur(16px);
+  padding: 12px 16px;
+  margin: 0 0 12px;
+  background: #ffffff;
+  opacity: 1;
+  animation: none;
+  transition: none;
   border-bottom: 1px solid rgba(15, 23, 42, 0.06);
-  border-radius: 0 0 14px 14px;
+  border-radius: 0;
 }
 
 .bar-back {
@@ -117,6 +119,7 @@ defineProps({
 .bar-icon-btn {
   width: 40px;
   height: 40px;
+  padding: 0;
   display: grid;
   place-items: center;
   font-size: 17px;
@@ -145,6 +148,16 @@ defineProps({
 .bar-bookmark-btn .bar-bookmark-glyph {
   font-size: 18px;
   line-height: 1;
+}
+
+.bar-icon-svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+  margin: auto;
+  object-fit: contain;
+  pointer-events: none;
+  opacity: 0.85;
 }
 
 .bar-export {

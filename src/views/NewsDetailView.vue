@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchNewsDetail, fetchNewsList, postNewsFakeScoreModel } from '../api/news'
-import { FAKE_SCORE_BETA, FAKE_SCORE_FEATURE_ORDER } from '../constants/fakeScoreModelExplain'
+import { FAKE_SCORE_BETA, FAKE_SCORE_FEATURE_LABELS, FAKE_SCORE_FEATURE_ORDER } from '../constants/fakeScoreModelExplain'
 import { newsPortalPicsumPlaceholder } from '../utils/newsFallbackImage'
+import { scoreToTier, tierClassSuffix, tierLabel } from '../utils/scoreTier'
 import NewsDetailToolbar from '../components/news-detail/NewsDetailToolbar.vue'
 import NewsDetailSkeleton from '../components/news-detail/NewsDetailSkeleton.vue'
 
@@ -23,21 +24,6 @@ const heroImageFallback = ref(false)
 const bookmarkGuideOpen = ref(false)
 
 const apiMock = import.meta.env.VITE_USE_MOCK === 'true'
-
-const FAKE_SCORE_FEATURE_LABELS = {
-  x1: '来源不可信度',
-  x2: '媒体偏见',
-  x3: '报道差错 / 不可核验',
-  x5: '情绪煽动',
-  x6: '情绪极性极端',
-  x7: '主观性',
-  x8: '传播链深度',
-  x9: '扩散范围',
-  x10: '突发性 / 异常节奏',
-  x11: '多源不一致 / 孤证',
-  x12: '标题党',
-  x13: '语言异常',
-}
 
 const fakeScoreModelLoading = ref(false)
 /** 12 维模型：详情区（特征表 / 重要性 / 说明）默认收起 */
@@ -185,6 +171,39 @@ const modelFakeBarPct = computed(() => {
   return Math.min(100, Math.max(0, n))
 })
 
+const credTier = computed(() => scoreToTier(detail.value?.credibilityScore, 'credibility'))
+const credTierSuffix = computed(() => tierClassSuffix(credTier.value, 'credibility'))
+const credTierHint = computed(() => tierLabel(credTier.value, 'credibility'))
+
+/** 旧版 fakeScore 多为 0–10，映射到 0–100 再分档 */
+const legacyFakeNormalized = computed(() => {
+  const n = Number(detail.value?.fakeScore)
+  if (Number.isNaN(n)) return null
+  if (n <= 10) return n * 10
+  return Math.min(100, Math.max(0, n))
+})
+
+const modelFakeTier = computed(() => {
+  const m = Number(detail.value?.fakeScoreModel?.fakeScore)
+  if (!Number.isNaN(m)) return scoreToTier(m, 'fake')
+  const leg = legacyFakeNormalized.value
+  if (leg == null) return 'mid'
+  return scoreToTier(leg, 'fake')
+})
+const modelFakeTierSuffix = computed(() => tierClassSuffix(modelFakeTier.value, 'fake'))
+const modelFakeTierHint = computed(() => tierLabel(modelFakeTier.value, 'fake'))
+
+watch(
+  () => (route.name === 'news-detail' ? detail.value?.title : null),
+  (t) => {
+    if (route.name !== 'news-detail') return
+    if (t && String(t).trim()) {
+      const s = String(t).trim()
+      document.title = `TruthLens - ${s.length > 44 ? `${s.slice(0, 44)}…` : s}`
+    }
+  },
+)
+
 function fmtFeature01(v) {
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
@@ -243,6 +262,13 @@ function mcpArticlesList(m) {
 function fmtConsistent(v) {
   if (v == null || v === '') return '—'
   return String(v)
+}
+
+function msTone(value) {
+  const s = String(value == null ? '' : value).trim().toLowerCase()
+  if (value === true || s === '是' || s === 'true' || s === '一致') return 'good'
+  if (value === false || s === '否' || s === 'false' || s.includes('矛盾') || s.includes('不一致')) return 'bad'
+  return 'mid'
 }
 
 function fmtChinaRelated(v) {
@@ -316,9 +342,12 @@ async function loadDetail() {
   heroImageFallback.value = false
   const id = route.params.id
   try {
+    window.scrollTo({ top: 0, behavior: 'auto' })
     const data = await fetchNewsDetail(id)
     detail.value = data
     await loadRelated(data)
+    await nextTick()
+    window.scrollTo({ top: 0, behavior: 'auto' })
   } catch (e) {
     error.value = e?.message || '加载失败，请稍后重试'
   } finally {
@@ -446,6 +475,7 @@ watch(
 onMounted(() => {
   updateRelatedPageSize()
   window.addEventListener('resize', updateRelatedPageSize)
+  window.scrollTo({ top: 0, behavior: 'auto' })
   loadDetail()
 })
 
@@ -513,7 +543,7 @@ watch(bookmarkGuideOpen, (open) => {
       </div>
     </Teleport>
 
-    <div class="nd-inner">
+    <div class="nd-inner nd-enter">
       <NewsDetailSkeleton v-if="loading" />
       <div v-else-if="error" class="nd-error" role="alert">
         <p>{{ error }}</p>
@@ -521,27 +551,6 @@ watch(bookmarkGuideOpen, (open) => {
       </div>
 
       <template v-else-if="detail">
-        <!-- 随滚动吸附：可信度 / 风险速览 -->
-        <div class="nd-sticky" :class="'risk--' + riskBand(detail.riskLevel)">
-          <div class="nd-sticky-inner">
-            <div class="nd-sticky-score" v-if="credibilityPct != null">
-              <span class="nd-sticky-label">可信指数</span>
-              <strong>{{ detail.credibilityScore }}</strong>
-              <span class="nd-sticky-track"><i :style="{ width: credibilityPct + '%' }" /></span>
-            </div>
-            <div v-else class="nd-sticky-score nd-sticky-score--muted">
-              <span class="nd-sticky-label">可信指数</span>
-              <strong>—</strong>
-            </div>
-            <div class="nd-sticky-risk">
-              <span class="nd-chip" :class="'nd-chip--' + riskBand(detail.riskLevel)">
-                {{ detail.riskLevel || '—' }}
-              </span>
-              <span v-if="fakePct != null" class="nd-fake">虚假评分 {{ detail.fakeScore }}</span>
-            </div>
-          </div>
-        </div>
-
         <div class="nd-split">
           <section class="nd-left">
             <article class="nd-hero card">
@@ -562,8 +571,8 @@ watch(bookmarkGuideOpen, (open) => {
             <section class="nd-card card nd-body-card">
               <header class="nd-sec-head nd-sec-head--row">
                 <div>
-                  <h3>原文内容</h3>
-                  <span class="nd-sec-sub">正文与采集信息</span>
+                  <h3>内容摘要</h3>
+                  <span class="nd-sec-sub">保留核心摘要与原文插图</span>
                 </div>
                 <div class="nd-font-tools">
                   <button type="button" class="nd-font-btn" :disabled="fontStep <= 0" @click="bumpFont(-1)">A−</button>
@@ -579,12 +588,12 @@ watch(bookmarkGuideOpen, (open) => {
               </header>
               <div class="nd-body-cols nd-body-cols--single">
                 <div class="nd-body-col">
-                  <span class="nd-body-label">原文 / 采集正文</span>
+                    <span class="nd-body-label">摘要</span>
                   <div class="nd-prose nd-prose--orig" :style="{ fontSize: bodyFontPx + 'px' }">
-                    {{ detail.content?.trim() || '—' }}
+                      {{ detail.summary?.trim() || detail.content?.trim() || '—' }}
                   </div>
                 </div>
-                <div class="nd-body-col nd-body-col--img">
+                  <div v-if="primaryHeroImageUrl" class="nd-body-col nd-body-col--img">
                   <span class="nd-body-label">原文插图</span>
                   <div
                     class="nd-image-slot"
@@ -601,9 +610,6 @@ watch(bookmarkGuideOpen, (open) => {
                     <p v-if="heroImageIsPlaceholder && primaryHeroImageUrl" class="nd-image-hint">
                       原图链接在当前网络下无法加载，已使用与新闻门户大屏相同的预览占位图
                     </p>
-                    <p v-else-if="heroImageIsPlaceholder && !primaryHeroImageUrl" class="nd-image-hint">
-                      本条未提供插图地址，已使用与新闻门户大屏相同的预览占位图
-                    </p>
                   </div>
                 </div>
               </div>
@@ -613,38 +619,28 @@ watch(bookmarkGuideOpen, (open) => {
           <section class="nd-right">
             <section class="nd-card card">
               <header class="nd-sec-head">
-                <h3>加工结果摘要</h3>
-                <span class="nd-sec-sub">由模型加工后的可信度、结论与风险信息</span>
-              </header>
-              <div class="nd-analysis-wrap nd-analysis-wrap--panel">
-                <span class="nd-eyebrow nd-eyebrow--hero">总结（summary）</span>
-                <p class="nd-summary">{{ detail.summary != null && String(detail.summary).trim() ? String(detail.summary).trim() : '—' }}</p>
-              </div>
-              <div v-if="detail.verdict != null && String(detail.verdict).trim()" class="nd-verdict">
-                <span class="nd-verdict-label">综合判断（verdict）</span>
-                <span class="nd-verdict-val">{{ String(detail.verdict).trim() }}</span>
-              </div>
-            </section>
-
-            <section class="nd-card card">
-              <header class="nd-sec-head">
                 <h3>可信度与其它分析</h3>
-                <span class="nd-sec-sub">可信指数为接口推导；事实要点来自工作流 facts</span>
+                <span class="nd-sec-sub">可信指数为系统综合评估；事实要点来自已跑通的分析流水线</span>
               </header>
               <div class="nd-cred-grid nd-cred-grid--single">
-                <div class="nd-cred-block">
-                  <span class="nd-cred-label">可信指数（credibilityScore）</span>
+                <div class="nd-cred-block nd-score-tier" :class="'nd-score-tier--' + credTierSuffix">
+                  <span class="nd-cred-label">可信指数</span>
                   <div class="nd-cred-num-row">
-                    <strong class="nd-cred-num">{{ detail.credibilityScore != null ? detail.credibilityScore : '—' }}</strong>
+                    <strong class="nd-cred-num nd-cred-num--hero">{{ detail.credibilityScore != null ? detail.credibilityScore : '—' }}</strong>
                     <span class="nd-cred-scale">/ 100</span>
+                    <span v-if="detail.credibilityScore != null" class="nd-cred-tier-badge">{{ credTierHint }}</span>
                   </div>
                   <div v-if="credibilityPct != null" class="nd-bar">
-                    <i class="nd-bar-fill nd-bar-fill--cred" :style="{ width: credibilityPct + '%' }" />
+                    <i
+                      class="nd-bar-fill"
+                      :class="'nd-bar-fill--cred-tier-' + credTier"
+                      :style="{ width: credibilityPct + '%' }"
+                    />
                   </div>
                 </div>
               </div>
               <template v-if="detail.facts?.length">
-                <span class="nd-eyebrow nd-eyebrow--facts">事实要点（facts）</span>
+                <span class="nd-eyebrow nd-eyebrow--facts">事实要点</span>
                 <ul class="nd-facts">
                   <li v-for="(f, i) in detail.facts" :key="i">
                     <template v-if="typeof f === 'object' && f">
@@ -659,7 +655,7 @@ watch(bookmarkGuideOpen, (open) => {
             <section class="nd-card card nd-fsm-card">
               <div class="nd-fs-shell">
                 <div class="nd-fs-title-row">
-                  <h3 class="nd-fs-title">12 维 FakeScore 模型</h3>
+                  <h3 class="nd-fs-title">虚假风险参考分</h3>
                   <div v-if="!apiMock" class="nd-fs-title-actions">
                     <button
                       v-if="
@@ -687,9 +683,9 @@ watch(bookmarkGuideOpen, (open) => {
 
                 <div v-if="detail.fakeScoreModelStatus === 'pending'" class="nd-fsm-pending nd-fsm-pending--compact" role="status">
                   <div class="nd-fsm-spinner nd-fsm-spinner--sm" aria-hidden="true" />
-                  <p class="nd-fsm-pending-title nd-fsm-pending-title--compact">正在计算 FakeScore 模型…</p>
+                  <p class="nd-fsm-pending-title nd-fsm-pending-title--compact">正在计算参考分…</p>
                   <p class="nd-muted nd-fsm-pending-hint nd-fsm-pending-hint--compact">
-                    工作流已就绪，通义抽取约需数秒；将自动刷新。
+                    模型正在读取正文要点，通常数秒内完成；本页会自动刷新。
                   </p>
                 </div>
                 <div
@@ -718,29 +714,34 @@ watch(bookmarkGuideOpen, (open) => {
                   class="nd-fs-ready"
                 >
                   <div class="nd-fs-core">
-                    <div class="nd-cred-block nd-fs-core-block">
-                      <span class="nd-cred-label">模型 FakeScore</span>
+                    <div class="nd-cred-block nd-fs-core-block nd-score-tier" :class="'nd-score-tier--' + modelFakeTierSuffix">
+                      <span class="nd-cred-label">参考总分</span>
                       <div class="nd-cred-num-row nd-cred-num-row--tight">
-                        <strong class="nd-cred-num nd-cred-num--fs">{{
+                        <strong class="nd-cred-num nd-cred-num--fs nd-cred-num--hero-fake">{{
                           fmtModelScalar(detail.fakeScoreModel.fakeScore, 4)
                         }}</strong>
                         <span class="nd-cred-scale">/ 100</span>
+                        <span class="nd-cred-tier-badge nd-cred-tier-badge--fake">{{ modelFakeTierHint }}</span>
                       </div>
                       <div v-if="modelFakeBarPct != null" class="nd-bar nd-bar--fs">
-                        <i class="nd-bar-fill nd-bar-fill--fake" :style="{ width: modelFakeBarPct + '%' }" />
+                        <i
+                          class="nd-bar-fill"
+                          :class="'nd-bar-fill--fake-tier-' + modelFakeTier"
+                          :style="{ width: modelFakeBarPct + '%' }"
+                        />
                       </div>
                     </div>
                     <div class="nd-fs-core-side">
                       <div class="nd-fs-side-cell">
-                        <span class="nd-cred-label">P(fake)</span>
+                        <span class="nd-cred-label">风险比例</span>
                         <strong class="nd-fs-scalar">{{ fmtModelScalar(detail.fakeScoreModel.pFake, 4) }}</strong>
                       </div>
                       <div class="nd-fs-side-cell">
-                        <span class="nd-cred-label">f(x)</span>
+                        <span class="nd-cred-label">加权信号</span>
                         <strong class="nd-fs-scalar">{{ fmtModelScalar(detail.fakeScoreModel.f, 4) }}</strong>
                       </div>
                       <div v-if="detail.fakeScoreModel.computedAt" class="nd-fs-side-cell nd-fs-side-cell--time">
-                        <span class="nd-cred-label">计算时间</span>
+                        <span class="nd-cred-label">更新时间</span>
                         <span class="nd-fs-time-val">{{ formatTime(detail.fakeScoreModel.computedAt) }}</span>
                       </div>
                     </div>
@@ -843,28 +844,28 @@ watch(bookmarkGuideOpen, (open) => {
 
             <section v-if="detail.latestAnalysis" class="nd-card card nd-wf-fields">
               <header class="nd-sec-head">
-                <h3>工作流核心字段</h3>
-                <span class="nd-sec-sub">与百炼单篇 JSON 一一对应（无分析记录时不展示本块）</span>
+                <h3>分析结果摘要</h3>
+                <span class="nd-sec-sub">来自最近一次自动分析（无记录时不显示本区域）</span>
               </header>
               <dl class="nd-wf-dl">
                 <div class="nd-wf-dl-row">
-                  <dt>总结（summary）</dt>
+                  <dt>内容摘要</dt>
                   <dd>{{ detail.summary != null && String(detail.summary).trim() ? String(detail.summary).trim() : '—' }}</dd>
                 </div>
                 <div class="nd-wf-dl-row">
-                  <dt>是否涉华（chinaRelated）</dt>
+                  <dt>是否涉华</dt>
                   <dd>{{ fmtChinaRelated(detail.chinaRelated) }}</dd>
                 </div>
                 <div class="nd-wf-dl-row">
-                  <dt>虚假评分（fakeScore）</dt>
+                  <dt>简易风险分</dt>
                   <dd>{{ detail.fakeScore != null && !Number.isNaN(Number(detail.fakeScore)) ? detail.fakeScore : '—' }}</dd>
                 </div>
                 <div class="nd-wf-dl-row">
-                  <dt>风险等级（riskLevel）</dt>
+                  <dt>风险等级</dt>
                   <dd>{{ detail.riskLevel || '—' }}</dd>
                 </div>
                 <div class="nd-wf-dl-row">
-                  <dt>风险原因（riskReason）</dt>
+                  <dt>风险说明</dt>
                   <dd class="nd-wf-dl-dd--pre">
                     {{
                       detail.riskReason?.trim() ||
@@ -889,23 +890,23 @@ watch(bookmarkGuideOpen, (open) => {
 
         <section v-if="detail.latestAnalysis" class="nd-card card nd-ms-middle">
           <header class="nd-sec-head">
-            <h3>多源核验（multiSourceCheck）</h3>
-            <span class="nd-sec-sub">字段全部来自接口，空项显示为「—」；相关报道仅数组内容</span>
+            <h3>多源核验</h3>
+            <span class="nd-sec-sub">交叉比对公开报道与检索摘要；缺省项显示为「—」</span>
           </header>
           <div class="nd-ms">
             <div class="nd-ms-mcp">
               <div class="nd-ms-kpi">
                 <div class="nd-ms-kpi-cell">
                   <span class="nd-ms-kpi-k">是否同一事件（isSameEvent）</span>
-                  <span class="nd-ms-kpi-v">{{ fmtMsBool(ms.isSameEvent) }}</span>
+                  <span class="nd-ms-kpi-v" :class="'tone--' + msTone(ms.isSameEvent)">{{ fmtMsBool(ms.isSameEvent) }}</span>
                 </div>
                 <div class="nd-ms-kpi-cell">
                   <span class="nd-ms-kpi-k">信息一致性（isConsistent）</span>
-                  <span class="nd-ms-kpi-v">{{ fmtConsistent(ms.isConsistent) }}</span>
+                  <span class="nd-ms-kpi-v" :class="'tone--' + msTone(ms.isConsistent)">{{ fmtConsistent(ms.isConsistent) }}</span>
                 </div>
                 <div class="nd-ms-kpi-cell">
                   <span class="nd-ms-kpi-k">是否有权威信源（hasAuthoritySource）</span>
-                  <span class="nd-ms-kpi-v">{{ fmtMsBool(ms.hasAuthoritySource) }}</span>
+                  <span class="nd-ms-kpi-v" :class="'tone--' + msTone(ms.hasAuthoritySource)">{{ fmtMsBool(ms.hasAuthoritySource) }}</span>
                 </div>
               </div>
 
@@ -934,29 +935,33 @@ watch(bookmarkGuideOpen, (open) => {
           </header>
           <div class="nd-rel-carousel">
             <button type="button" class="nd-rel-nav" :disabled="!relatedCanPrev" @click="relatedPrev">‹</button>
-            <TransitionGroup name="nd-rel-slide" tag="div" class="nd-rel-track">
-              <button
-                v-for="item in relatedVisible"
-                :key="`${item.id}-${relatedStart}`"
-                type="button"
-                class="nd-rel-card"
-                @click="goRelated(item)"
-              >
-                <div class="nd-rel-thumb-wrap">
-                  <img
-                    class="nd-rel-thumb"
-                    :src="item.thumbnailUrl || `https://picsum.photos/seed/rel${item.id}/320/220`"
-                    alt=""
-                    loading="lazy"
-                  />
-                  <span class="nd-rel-risk" :class="'r--' + riskBand(item.risk)">{{ item.risk || '—' }}</span>
-                </div>
-                <div class="nd-rel-card-body">
-                  <span class="nd-rel-title">{{ item.title }}</span>
-                  <span class="nd-rel-src">{{ item.source || '未知来源' }}</span>
-                </div>
-              </button>
-            </TransitionGroup>
+            <Transition name="nd-rel-page" mode="out-in">
+              <div :key="relatedStart" class="nd-rel-track" aria-live="polite">
+                <button
+                  v-for="item in relatedVisible"
+                  :key="item.id"
+                  type="button"
+                  class="nd-rel-card"
+                  @click="goRelated(item)"
+                >
+                  <div class="nd-rel-thumb-wrap">
+                    <img
+                      v-if="item.thumbnailUrl || item.image || item.imageUrl"
+                      class="nd-rel-thumb"
+                      :src="item.thumbnailUrl || item.image || item.imageUrl"
+                      alt=""
+                      loading="lazy"
+                    />
+                    <div v-else class="nd-rel-thumb-empty">暂无原图</div>
+                    <span class="nd-rel-risk" :class="'r--' + riskBand(item.risk)">{{ item.risk || '—' }}</span>
+                  </div>
+                  <div class="nd-rel-card-body">
+                    <span class="nd-rel-title">{{ item.title }}</span>
+                    <span class="nd-rel-src">{{ item.source || '未知来源' }}</span>
+                  </div>
+                </button>
+              </div>
+            </Transition>
             <button type="button" class="nd-rel-nav" :disabled="!relatedCanNext" @click="relatedNext">›</button>
           </div>
         </section>
@@ -967,25 +972,45 @@ watch(bookmarkGuideOpen, (open) => {
 
 <style scoped>
 .nd {
+  position: relative;
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
   min-height: 100vh;
   min-height: 100dvh;
   background:
+    linear-gradient(180deg, rgba(127, 29, 29, 0.06) 0%, rgba(185, 28, 28, 0.02) 100%),
     radial-gradient(ellipse 80% 50% at 10% -10%, rgba(185, 28, 28, 0.08), transparent),
-    radial-gradient(ellipse 60% 40% at 100% 10%, rgba(248, 113, 113, 0.06), transparent),
-    var(--bg, #f4f4f3);
-  padding: 0 clamp(10px, 2.2vw, 28px) 48px;
+    radial-gradient(ellipse 60% 40% at 100% 10%, rgba(248, 113, 113, 0.06), transparent);
+  padding: 0 0 var(--page-pad-y-bottom);
   max-width: none;
-  width: 100%;
-  margin: 0;
+  margin-right: 0;
 }
 
 .nd-inner {
-  padding-top: 4px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 var(--page-pad-x);
+  padding-top: 0;
+}
+
+.nd-enter {
+  animation: ndEnter 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes ndEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .nd-split {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  grid-template-columns: 1fr;
   gap: 16px;
   align-items: stretch;
 }
@@ -1023,15 +1048,7 @@ watch(bookmarkGuideOpen, (open) => {
 }
 
 .nd-sticky {
-  position: sticky;
-  top: 58px;
-  z-index: 20;
-  margin-bottom: 16px;
-  border-radius: 12px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06);
+  display: none;
 }
 
 .nd-sticky-inner {
@@ -1066,11 +1083,48 @@ watch(bookmarkGuideOpen, (open) => {
   color: #64748b;
 }
 
-.nd-sticky-score strong {
-  font-size: 20px;
-  font-weight: 700;
-  color: #b91c1c;
+.nd-sticky-score .nd-sticky-hero-num {
+  font-size: clamp(1.35rem, 2.5vw, 1.75rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  font-family: var(--font-ui);
   font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.nd-sticky-tier-pill {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 999px;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.nd-score-tier--cred-low .nd-sticky-hero-num {
+  color: var(--score-tier-good);
+}
+.nd-score-tier--cred-mid .nd-sticky-hero-num {
+  color: var(--score-tier-mid);
+}
+.nd-score-tier--cred-high .nd-sticky-hero-num {
+  color: var(--score-tier-bad);
+}
+
+.nd-score-tier--cred-low .nd-sticky-tier-pill {
+  color: var(--score-tier-good);
+  background: var(--score-tier-good-bg);
+  border: 1px solid rgba(22, 163, 74, 0.35);
+}
+.nd-score-tier--cred-mid .nd-sticky-tier-pill {
+  color: var(--score-tier-mid);
+  background: var(--score-tier-mid-bg);
+  border: 1px solid rgba(180, 83, 9, 0.35);
+}
+.nd-score-tier--cred-high .nd-sticky-tier-pill {
+  color: var(--score-tier-bad);
+  background: var(--score-tier-bad-bg);
+  border: 1px solid rgba(185, 28, 28, 0.35);
 }
 
 .nd-sticky-track {
@@ -1082,11 +1136,20 @@ watch(bookmarkGuideOpen, (open) => {
   min-width: 80px;
 }
 
-.nd-sticky-track i {
+.nd-sticky-track .nd-sticky-track-fill {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #b91c1c, #f87171);
+}
+
+.nd-sticky-track-fill--cred-low {
+  background: linear-gradient(90deg, #15803d, #4ade80);
+}
+.nd-sticky-track-fill--cred-mid {
+  background: linear-gradient(90deg, #b45309, #fbbf24);
+}
+.nd-sticky-track-fill--cred-high {
+  background: linear-gradient(90deg, #991b1b, #f87171);
 }
 
 .nd-sticky-hint {
@@ -1124,6 +1187,54 @@ watch(bookmarkGuideOpen, (open) => {
   font-size: 12px;
   color: #64748b;
   font-variant-numeric: tabular-nums;
+}
+
+.nd-fake--tier {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.nd-fake-hint {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.nd-fake--fake-low {
+  color: var(--score-tier-good);
+  background: var(--score-tier-good-bg);
+  border: 1px solid rgba(22, 163, 74, 0.3);
+}
+.nd-fake--fake-low .nd-fake-hint {
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--score-tier-good);
+}
+
+.nd-fake--fake-mid {
+  color: var(--score-tier-mid);
+  background: var(--score-tier-mid-bg);
+  border: 1px solid rgba(180, 83, 9, 0.35);
+}
+.nd-fake--fake-mid .nd-fake-hint {
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--score-tier-mid);
+}
+
+.nd-fake--fake-high {
+  color: var(--score-tier-bad);
+  background: var(--score-tier-bad-bg);
+  border: 1px solid rgba(185, 28, 28, 0.35);
+}
+.nd-fake--fake-high .nd-fake-hint {
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--score-tier-bad);
 }
 
 .nd-hero {
@@ -1311,6 +1422,33 @@ watch(bookmarkGuideOpen, (open) => {
   border: 1px solid #e2e8f0;
 }
 
+.nd-score-tier.nd-score-tier--cred-low {
+  background: var(--score-tier-good-bg);
+  border-color: rgba(22, 163, 74, 0.35);
+  box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.06);
+}
+.nd-score-tier.nd-score-tier--cred-mid {
+  background: var(--score-tier-mid-bg);
+  border-color: rgba(180, 83, 9, 0.35);
+}
+.nd-score-tier.nd-score-tier--cred-high {
+  background: var(--score-tier-bad-bg);
+  border-color: rgba(185, 28, 28, 0.35);
+}
+
+.nd-score-tier.nd-score-tier--fake-low {
+  background: var(--score-tier-good-bg);
+  border-color: rgba(22, 163, 74, 0.35);
+}
+.nd-score-tier.nd-score-tier--fake-mid {
+  background: var(--score-tier-mid-bg);
+  border-color: rgba(180, 83, 9, 0.35);
+}
+.nd-score-tier.nd-score-tier--fake-high {
+  background: var(--score-tier-bad-bg);
+  border-color: rgba(185, 28, 28, 0.35);
+}
+
 .nd-cred-label {
   display: block;
   font-size: 12px;
@@ -1334,6 +1472,54 @@ watch(bookmarkGuideOpen, (open) => {
   letter-spacing: -0.02em;
 }
 
+.nd-cred-num--hero {
+  font-size: clamp(2rem, 4vw, 2.65rem);
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+}
+
+.nd-score-tier--cred-low .nd-cred-num--hero {
+  color: var(--score-tier-good);
+}
+.nd-score-tier--cred-mid .nd-cred-num--hero {
+  color: var(--score-tier-mid);
+}
+.nd-score-tier--cred-high .nd-cred-num--hero {
+  color: var(--score-tier-bad);
+}
+
+.nd-cred-tier-badge {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  color: #475569;
+}
+
+.nd-cred-tier-badge--fake {
+  margin-left: 0;
+}
+
+.nd-score-tier--fake-low .nd-cred-num--hero-fake {
+  color: var(--score-tier-good);
+}
+.nd-score-tier--fake-mid .nd-cred-num--hero-fake {
+  color: var(--score-tier-mid);
+}
+.nd-score-tier--fake-high .nd-cred-num--hero-fake {
+  color: var(--score-tier-bad);
+}
+
+.nd-cred-num--hero-fake {
+  font-size: clamp(1.65rem, 3.2vw, 2.15rem);
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+
 .nd-cred-scale {
   font-size: 13px;
   color: #94a3b8;
@@ -1353,16 +1539,28 @@ watch(bookmarkGuideOpen, (open) => {
   transition: width 0.5s ease;
 }
 
-.nd-bar-fill--cred {
-  background: linear-gradient(90deg, #22c55e, #4ade80);
+.nd-bar-fill--cred-tier-low {
+  background: linear-gradient(90deg, #15803d, #4ade80);
+}
+.nd-bar-fill--cred-tier-mid {
+  background: linear-gradient(90deg, #b45309, #fbbf24);
+}
+.nd-bar-fill--cred-tier-high {
+  background: linear-gradient(90deg, #b91c1c, #fb7185);
 }
 
 .nd-bar-fill--risk {
   background: linear-gradient(90deg, #f97316, #ef4444);
 }
 
-.nd-bar-fill--fake {
-  background: linear-gradient(90deg, #f59e0b, #dc2626);
+.nd-bar-fill--fake-tier-low {
+  background: linear-gradient(90deg, #15803d, #4ade80);
+}
+.nd-bar-fill--fake-tier-mid {
+  background: linear-gradient(90deg, #b45309, #f59e0b);
+}
+.nd-bar-fill--fake-tier-high {
+  background: linear-gradient(90deg, #991b1b, #f87171);
 }
 
 .nd-bar--tight {
@@ -2038,6 +2236,10 @@ watch(bookmarkGuideOpen, (open) => {
   word-break: break-word;
 }
 
+.nd-ms-kpi-v.tone--good { color: #15803d; }
+.nd-ms-kpi-v.tone--mid { color: #b45309; }
+.nd-ms-kpi-v.tone--bad { color: #b91c1c; }
+
 .nd-ms-block {
   display: flex;
   flex-direction: column;
@@ -2053,12 +2255,17 @@ watch(bookmarkGuideOpen, (open) => {
 .nd-ms-desc {
   margin: 0;
   padding: 14px 16px;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-  font-size: 14px;
-  line-height: 1.75;
-  color: #1e293b;
+  border-radius: 14px;
+  border-left: 4px solid rgba(185, 28, 28, 0.42);
+  border-top: 1px solid rgba(185, 28, 28, 0.12);
+  border-right: 1px solid rgba(185, 28, 28, 0.12);
+  border-bottom: 1px solid rgba(185, 28, 28, 0.12);
+  background: #fffaf6;
+  font-size: 15px;
+  line-height: 1.78;
+  color: #374151;
+  text-align: justify;
+  text-justify: inter-ideograph;
   white-space: pre-wrap;
 }
 
@@ -2369,6 +2576,8 @@ watch(bookmarkGuideOpen, (open) => {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   min-width: 0;
+  align-items: stretch;
+  min-height: 266px;
 }
 
 .nd-rel-card {
@@ -2381,6 +2590,7 @@ watch(bookmarkGuideOpen, (open) => {
   cursor: pointer;
   display: flex;
   flex-direction: column;
+  height: 100%;
   transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
 }
 
@@ -2404,29 +2614,38 @@ watch(bookmarkGuideOpen, (open) => {
   display: block;
 }
 
+.nd-rel-thumb-empty {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  color: #78716c;
+  background: linear-gradient(135deg, #fafaf9, #f5f5f4);
+}
+
 .nd-rel-card-body {
   padding: 10px 10px 12px;
   display: grid;
   gap: 6px;
 }
 
-.nd-rel-slide-enter-active,
-.nd-rel-slide-leave-active {
-  transition: transform 0.28s ease, opacity 0.28s ease;
+.nd-rel-page-enter-active,
+.nd-rel-page-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
 }
-
-.nd-rel-slide-enter-from {
+.nd-rel-page-enter-from {
   opacity: 0;
-  transform: translateX(24px);
+  transform: translateX(18px);
 }
-
-.nd-rel-slide-leave-to {
+.nd-rel-page-leave-to {
   opacity: 0;
-  transform: translateX(-24px);
+  transform: translateX(-18px);
 }
 
 .nd-rel-btn {
   width: 100%;
+  min-height: 82px;
   display: grid;
   grid-template-columns: auto 1fr auto;
   gap: 10px;
@@ -2447,7 +2666,7 @@ watch(bookmarkGuideOpen, (open) => {
 .nd-rel-btn:hover {
   border-color: #fca5a5;
   box-shadow: 0 6px 18px rgba(185, 28, 28, 0.1);
-  transform: translateY(-1px);
+  transform: translate3d(0, -1px, 0);
 }
 
 .nd-rel-risk {

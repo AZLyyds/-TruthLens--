@@ -1,39 +1,20 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AnalysisResult } from '../../types/analysis'
-import { renderAiMarkdown } from '../../utils/aiMarkdown.js'
-
 const props = defineProps<{
   loading: boolean
   result?: AnalysisResult | null
+  /** 单篇分析页始终为上下布局，保留 prop 以兼容 */
+  layoutStacked?: boolean
 }>()
 
 const model = defineModel<string>({ required: true })
 const emit = defineEmits<{ analyze: [] }>()
 
-const structuredReport = computed(() => {
-  const r = props.result
-  if (!r) return null
-
-  const risk = String(r.riskLevel || '未判定')
-  const score = Number(r.credibilityScore)
-  const scoreText = Number.isNaN(score) ? '—' : `${Math.round(score)}`
-  const title = String(r.meta?.newsTitle || '').trim() || '本次输入文本'
-  const detailedText = String(r.detailedReport || '').trim()
-
-  return {
-    title,
-    risk,
-    scoreText,
-    detailedText,
-  }
-})
-
-const detailedReportHtml = computed(() => renderAiMarkdown(structuredReport.value?.detailedText || ''))
 </script>
 
 <template>
-  <div class="in-col single-input-card">
+  <div class="in-col single-input-card" :class="{ 'in-col--stacked': layoutStacked }">
     <div class="in-decor" aria-hidden="true">
       <svg class="in-decor-svg" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
         <circle cx="100" cy="100" r="78" stroke="currentColor" stroke-width="1.2" opacity="0.25" />
@@ -66,39 +47,17 @@ const detailedReportHtml = computed(() => renderAiMarkdown(structuredReport.valu
     </section>
 
     <aside class="in-aside">
-      <template v-if="structuredReport">
-        <div class="in-report">
-          <div class="in-report-head">
-            <p class="in-aside-title">AI 总结报告</p>
-            <span class="in-report-risk">{{ structuredReport.risk }}</span>
-          </div>
-          <p class="in-report-title" :title="structuredReport.title">{{ structuredReport.title }}</p>
-          <p class="in-report-line">
-            可信度评分：<strong>{{ structuredReport.scoreText }}</strong> / 100
-          </p>
-          <div
-            v-if="structuredReport.detailedText"
-            class="in-report-text in-report-md markdown-body"
-            v-html="detailedReportHtml"
-          />
-          <p v-else class="in-report-text in-report-text--placeholder">
-            该文本已完成结构化核验，建议结合关键证据点与执行建议进行复核处置。
-          </p>
-        </div>
-      </template>
-      <template v-else>
-        <p class="in-aside-title">TruthLens</p>
-        <ul class="in-aside-list">
-          <li>多源信息抽取与交叉验证</li>
-          <li>可信度与风险维度量化</li>
-          <li>可追溯分析路径</li>
-        </ul>
-        <div class="in-aside-badge" aria-hidden="true">
-          <span class="in-badge-dot" />
-          <span class="in-badge-dot" />
-          <span class="in-badge-dot" />
-        </div>
-      </template>
+      <p class="in-aside-title">TruthLens</p>
+      <ul class="in-aside-list">
+        <li>多源信息抽取与交叉验证</li>
+        <li>可信度与风险维度量化</li>
+        <li>AI 总结与证据路径在下方输出区展示</li>
+      </ul>
+      <div class="in-aside-badge" aria-hidden="true">
+        <span class="in-badge-dot" />
+        <span class="in-badge-dot" />
+        <span class="in-badge-dot" />
+      </div>
     </aside>
   </div>
 </template>
@@ -189,7 +148,7 @@ const detailedReportHtml = computed(() => renderAiMarkdown(structuredReport.valu
 
 .in-hint {
   margin: 4px 0 10px;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.35;
   color: #86868b;
 }
@@ -200,7 +159,7 @@ const detailedReportHtml = computed(() => renderAiMarkdown(structuredReport.valu
   max-height: 180px;
   margin: 0;
   padding: 11px 13px;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.5;
   letter-spacing: -0.011em;
   color: #1d1d1f;
@@ -288,6 +247,13 @@ const detailedReportHtml = computed(() => renderAiMarkdown(structuredReport.valu
   scrollbar-width: thin;
 }
 
+.in-col.in-col--stacked .in-aside {
+  max-height: none;
+  min-height: 0;
+  overflow: visible;
+  margin-top: 14px;
+}
+
 .in-report {
   padding: 12px 12px 10px;
   border-radius: 12px;
@@ -338,6 +304,58 @@ const detailedReportHtml = computed(() => renderAiMarkdown(structuredReport.valu
   color: #7f1d1d;
 }
 
+.in-cred-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.in-cred-line strong {
+  font-size: 1.35rem;
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.in-cred-line--cred-low strong {
+  color: var(--score-tier-good);
+}
+.in-cred-line--cred-mid strong {
+  color: var(--score-tier-mid);
+}
+.in-cred-line--cred-high strong {
+  color: var(--score-tier-bad);
+}
+
+.in-cred-line--cred-low {
+  background: var(--score-tier-good-bg);
+  border-color: rgba(22, 163, 74, 0.25);
+}
+.in-cred-line--cred-mid {
+  background: var(--score-tier-mid-bg);
+  border-color: rgba(180, 83, 9, 0.25);
+}
+.in-cred-line--cred-high {
+  background: var(--score-tier-bad-bg);
+  border-color: rgba(185, 28, 28, 0.25);
+}
+
+.in-cred-pill {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  color: #475569;
+}
+
 .in-report-text {
   margin: 2px 0 0;
   font-size: 12.5px;
@@ -352,9 +370,14 @@ const detailedReportHtml = computed(() => renderAiMarkdown(structuredReport.valu
   max-height: min(58vh, 560px);
   overflow-y: auto;
   padding-right: 4px;
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.72;
   color: #1f2937;
+}
+
+.in-col.in-col--stacked .in-report-md {
+  max-height: none;
+  overflow: visible;
 }
 
 .in-report-md :deep(h1) {
@@ -404,7 +427,7 @@ const detailedReportHtml = computed(() => renderAiMarkdown(structuredReport.valu
 
 .in-aside-title {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -423,7 +446,7 @@ const detailedReportHtml = computed(() => renderAiMarkdown(structuredReport.valu
 .in-aside-list li {
   position: relative;
   padding-left: 14px;
-  font-size: 12px;
+  font-size: 13.5px;
   line-height: 1.45;
   letter-spacing: -0.01em;
   color: #3a3a3c;

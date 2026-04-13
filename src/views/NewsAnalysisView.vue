@@ -13,6 +13,9 @@ const store = useSingleAnalysisStore()
 const inputText = ref('')
 
 const title = computed(() => String(route.query.title || '涉华新闻样例：国际平台出现争议性报道'))
+
+/** 单篇分析固定为上下布局（输入在上、输出在下） */
+const stackReportLayout = true
 const newsId = computed(() => {
   const raw = route.query.newsId
   if (raw == null || raw === '') return undefined
@@ -237,17 +240,25 @@ watch(
 
 <template>
   <div class="page page-analysis single-analysis">
-    <main class="panel-layout single-layout">
-      <div class="sa-input-wrap">
-        <InputArea v-model="inputText" :loading="store.isLoading" :result="store.result" @analyze="runAnalysis" />
+    <main class="panel-layout single-layout single-layout--stack">
+      <div class="sa-input-wrap anim-up delay-1">
+        <InputArea
+          v-model="inputText"
+          :loading="store.isLoading"
+          :result="store.result"
+          :layout-stacked="true"
+          @analyze="runAnalysis"
+        />
       </div>
-      <ResultCard
-        :loading="store.isLoading"
-        :result="store.result"
-        :error="store.errorMessage"
-        :analyzed-at="store.analyzedAt"
-        @export="onExport"
-      />
+      <div class="anim-up delay-2">
+        <ResultCard
+          :loading="store.isLoading"
+          :result="store.result"
+          :error="store.errorMessage"
+          :analyzed-at="store.analyzedAt"
+          @export="onExport"
+        />
+      </div>
     </main>
   </div>
 </template>

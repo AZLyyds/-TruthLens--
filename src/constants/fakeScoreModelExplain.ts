@@ -32,3 +32,19 @@ export const FAKE_SCORE_FEATURE_ORDER = [
   'x12',
   'x13',
 ] as const
+
+/** 与算法引擎维度一一对应，供界面展示（勿与 β 权重混淆）。 */
+export const FAKE_SCORE_FEATURE_LABELS: Record<(typeof FAKE_SCORE_FEATURE_ORDER)[number], string> = {
+  x1: '来源不可信度',
+  x2: '媒体偏见',
+  x3: '报道差错 / 不可核验',
+  x5: '情绪煽动',
+  x6: '情绪极性极端',
+  x7: '主观性',
+  x8: '传播链深度',
+  x9: '扩散范围',
+  x10: '突发性 / 异常节奏',
+  x11: '多源不一致 / 孤证',
+  x12: '标题党',
+  x13: '语言异常',
+}

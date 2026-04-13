@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import type { AnalysisResult } from '../../types/analysis'
-import { FAKE_SCORE_BETA, FAKE_SCORE_FEATURE_ORDER } from '../../constants/fakeScoreModelExplain'
+import { scoreToTier, tierClassSuffix, tierLabel } from '../../utils/scoreTier'
+import { FAKE_SCORE_BETA, FAKE_SCORE_FEATURE_LABELS, FAKE_SCORE_FEATURE_ORDER } from '../../constants/fakeScoreModelExplain'
+import { renderAiMarkdown } from '../../utils/aiMarkdown.js'
 import RadarChart from './RadarChart.vue'
 
 const EvidencePath = defineAsyncComponent(() => import('./EvidencePath.vue'))
@@ -27,22 +29,16 @@ const displaySummary = computed(() => props.result?.meta?.newsSummary || props.r
 const sourceLine = computed(() => [props.result?.meta?.sourceName, props.analyzedAt].filter(Boolean).join(' · '))
 
 const fakeScoreDetailOpen = ref(false)
+const credDetailOpen = ref(false)
 const fsModel = computed(() => props.result?.truthLensFakeScoreModel ?? null)
 
-const FAKE_SCORE_LABELS: Record<string, string> = {
-  x1: '来源不可信度',
-  x2: '媒体偏见',
-  x3: '报道差错 / 不可核验',
-  x5: '情绪煽动',
-  x6: '情绪极性极端',
-  x7: '主观性',
-  x8: '传播链深度',
-  x9: '扩散范围',
-  x10: '突发性 / 异常节奏',
-  x11: '多源不一致 / 孤证',
-  x12: '标题党',
-  x13: '语言异常',
-}
+const aiReportHtml = computed(() =>
+  renderAiMarkdown(String(props.result?.detailedReport || '').trim()),
+)
+const hasAiReport = computed(() => {
+  const t = String(props.result?.detailedReport || '').trim()
+  return Boolean(t && t !== '—')
+})
 
 function fmt01(v: unknown) {
   const n = Number(v)
@@ -64,9 +60,49 @@ function fmtTime(iso: string | undefined) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-watch(fakeScoreDetailOpen, (open) => {
+function fmtSignalPct(v: unknown) {
+  const n = Number(v)
+  if (Number.isNaN(n)) return '—'
+  return `${Math.round(Math.min(1, Math.max(0, n)) * 100)}%`
+}
+
+function setModalScrollLock(on: boolean) {
   if (typeof document === 'undefined') return
-  document.body.style.overflow = open ? 'hidden' : ''
+  document.documentElement.classList.toggle('tl-modal-open', on)
+}
+
+watch([fakeScoreDetailOpen, credDetailOpen], ([a, b]) => setModalScrollLock(Boolean(a || b)))
+
+onBeforeUnmount(() => {
+  setModalScrollLock(false)
+})
+
+const credTierSuffix = computed(() =>
+  props.result
+    ? tierClassSuffix(scoreToTier(props.result.credibilityScore, 'credibility'), 'credibility')
+    : 'cred-mid',
+)
+const credTierHint = computed(() =>
+  props.result ? tierLabel(scoreToTier(props.result.credibilityScore, 'credibility'), 'credibility') : '',
+)
+
+const fakeFormulaTierSuffix = computed(() =>
+  props.result?.formulaFakeScore == null
+    ? 'fake-mid'
+    : tierClassSuffix(scoreToTier(props.result.formulaFakeScore, 'fake'), 'fake'),
+)
+const fakeFormulaTierHint = computed(() =>
+  props.result?.formulaFakeScore == null
+    ? ''
+    : tierLabel(scoreToTier(props.result.formulaFakeScore, 'fake'), 'fake'),
+)
+
+const riskLevelTone = computed(() => {
+  const r = String(props.result?.riskLevel || '').toLowerCase()
+  if (r.includes('高') || r === 'high') return 'risk-high'
+  if (r.includes('中') || r === 'medium' || r === 'mid') return 'risk-mid'
+  if (r.includes('低') || r === 'low') return 'risk-low'
+  return 'risk-mid'
 })
 </script>
 
@@ -89,8 +125,8 @@ watch(fakeScoreDetailOpen, (open) => {
       >
         <div class="an-fs-modal-head">
           <div>
-            <p class="an-fs-kicker">TruthLens · 可解释 FakeScore</p>
-            <h2 id="an-fs-title" class="an-fs-title">公式评分是怎么来的？</h2>
+            <p class="an-fs-kicker">TruthLens · 阅读提示</p>
+            <h2 id="an-fs-title" class="an-fs-title">虚假风险参考分是什么？</h2>
           </div>
           <button type="button" class="an-fs-close" aria-label="关闭" @click="fakeScoreDetailOpen = false">×</button>
         </div>
@@ -101,68 +137,66 @@ watch(fakeScoreDetailOpen, (open) => {
             <span class="an-fs-hero-unit">/ 100</span>
           </div>
           <p class="an-fs-hero-hint">
-            数值越高，表示综合风险信号越接近「虚假 / 误导」一侧；与下方可信度（100 − 本值）配套阅读。
+            分数在 0～100 之间，<strong>越高</strong>表示模型越建议您在分享前多核对来源与事实；可与下方的「可信度」对照阅读。
           </p>
         </div>
 
         <div class="an-fs-kpis" v-if="fsModel">
           <div class="an-fs-kpi">
-            <span class="an-fs-kpi-k">P(fake)</span>
+            <span class="an-fs-kpi-k">风险比例</span>
             <span class="an-fs-kpi-v">{{ fmt4(fsModel.pFake) }}</span>
-            <span class="an-fs-kpi-d">f/Σβ，与 FakeScore/100 一致</span>
+            <span class="an-fs-kpi-d">与上方总分 /100 对应，便于对照</span>
           </div>
           <div class="an-fs-kpi">
-            <span class="an-fs-kpi-k">f(x)</span>
+            <span class="an-fs-kpi-k">加权信号</span>
             <span class="an-fs-kpi-v">{{ fmt4(fsModel.f) }}</span>
-            <span class="an-fs-kpi-d">线性项（加权和）</span>
+            <span class="an-fs-kpi-d">各维度信号按重要性相加的中间值</span>
           </div>
           <div class="an-fs-kpi an-fs-kpi--wide">
-            <span class="an-fs-kpi-k">计算时间</span>
+            <span class="an-fs-kpi-k">更新时间</span>
             <span class="an-fs-kpi-v an-fs-kpi-v--sm">{{ fmtTime(fsModel.computedAt) }}</span>
           </div>
         </div>
         <p v-else class="an-fs-muted">
-          本轮未返回第二轮 12 维特征明细时，上方主分数可能来自第一轮风险模型；配置通义 Key 并重试分析可获取完整公式链路。
+          若未看到下方各维度明细，说明本轮只返回了总分。可稍后重新分析一次，以获取完整的分项说明。
         </p>
 
         <section class="an-fs-section an-fs-section--callout">
-          <h3 class="an-fs-h3">先分清两类数字（避免和文档里的 β 表混淆）</h3>
+          <h3 class="an-fs-h3">读表小提示</h3>
           <ul class="an-fs-list an-fs-list--tight">
             <li>
-              <strong>xᵢ（下表第二列）</strong>：通义千问对<strong>当前这条新闻</strong>抽出来的<strong>风险特征输入</strong>，取值
-              0–1，<strong>每条稿件不同</strong>。你截图里看到的 0.70、0.30 等指的是这一类。
+              <strong>「本条信号」</strong>：只针对<strong>当前这条内容</strong>，表示模型在来源、措辞、传播特征等方面读到的<strong>警惕程度</strong>，用百分比展示，<strong>每条稿件不同</strong>。
             </li>
             <li>
-              <strong>βᵢ（固定权重）</strong>：写在服务端 <code class="an-fs-code">fakeScoreModel.js</code> 里，<strong>所有新闻共用同一套</strong>，例如
-              β₁=0.10、β₂=0.14…，分组和为 0.30 / 0.20 / 0.15 / 0.35，全体 β 之和为 1（与课程/文档表一致）。<strong>β 不会出现在下表第二列</strong>。
+              <strong>「重要性份量」</strong>：表示各维度在综合分里的大致占比，<strong>全站统一</strong>，方便横向对比；<strong>不是本条信号的数值</strong>。
             </li>
             <li>
-              <strong>合成方式</strong>：先算线性项 f(x)=Σβᵢxᵢ（β₀=0），P(fake)=f/Σβ，FakeScore=P(fake)×100（Σβ=1 时 x 全为 1 得满分 100）。
+              <strong>总分怎么来</strong>：先把「本条信号」与「重要性份量」按规则做加权，再换算成 0～100 的参考分。您只需关注<strong>总分高低</strong>与<strong>哪几条信号偏高</strong>即可。
             </li>
           </ul>
         </section>
 
         <section class="an-fs-section">
-          <h3 class="an-fs-h3">为何可信</h3>
+          <h3 class="an-fs-h3">可以怎么用</h3>
           <ul class="an-fs-list">
-            <li><strong>两阶段</strong>：先做事实抽取与风险理解（第一轮 AI），再把结构化结果与正文一并交给通义千问，抽取 12 维「风险向」特征 xᵢ（第二轮）。</li>
-            <li><strong>固定公式</strong>：用文档约定的 β 与当条 x 做线性组合，再线性映射到 0–100，同一套规则可复核。</li>
+            <li>把它当作<strong>阅读提醒</strong>：高分时优先核对原始出处、时间线与多方报道。</li>
+            <li>与页面上的<strong>可信度</strong>、事实要点一起看；若结论不一致，以您亲自核实为准。</li>
           </ul>
         </section>
 
         <details class="an-fs-details">
-          <summary class="an-fs-details-sum">展开查看：各维固定权重 β（与文档一致，非本条 x）</summary>
+          <summary class="an-fs-details-sum">展开查看：各维度重要性份量（全站统一）</summary>
           <div class="an-fs-table-wrap an-fs-table-wrap--beta">
             <table class="an-fs-table">
               <thead>
                 <tr>
                   <th scope="col">维度</th>
-                  <th scope="col">β（固定）</th>
+                  <th scope="col">份量（0–1）</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="key in FAKE_SCORE_FEATURE_ORDER" :key="'b-' + key">
-                  <th scope="row">{{ FAKE_SCORE_LABELS[key] }}（{{ key }}）</th>
+                  <th scope="row">{{ FAKE_SCORE_FEATURE_LABELS[key] }}</th>
                   <td>{{ FAKE_SCORE_BETA[key]?.toFixed(2) ?? '—' }}</td>
                 </tr>
               </tbody>
@@ -171,20 +205,20 @@ watch(fakeScoreDetailOpen, (open) => {
         </details>
 
         <section v-if="fsModel?.features && typeof fsModel.features === 'object'" class="an-fs-section">
-          <h3 class="an-fs-h3">本条新闻的特征 xᵢ（0–1，每条不同）</h3>
-          <p class="an-fs-table-lead">下表为<strong>输入 x</strong>，不是权重 β。</p>
+          <h3 class="an-fs-h3">本条各维度信号</h3>
+          <p class="an-fs-table-lead">百分比越高，越建议您对该角度<strong>多留一个心眼</strong>。</p>
           <div class="an-fs-table-wrap">
             <table class="an-fs-table">
               <thead>
                 <tr>
                   <th scope="col">维度</th>
-                  <th scope="col">x 取值 [0,1]</th>
+                  <th scope="col">信号强度</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="key in FAKE_SCORE_FEATURE_ORDER" :key="key">
-                  <th scope="row">{{ FAKE_SCORE_LABELS[key] }}（{{ key }}）</th>
-                  <td>{{ fmt01(fsModel.features?.[key]) }}</td>
+                  <th scope="row">{{ FAKE_SCORE_FEATURE_LABELS[key] }}</th>
+                  <td>{{ fmtSignalPct(fsModel.features?.[key]) }}</td>
                 </tr>
               </tbody>
             </table>
@@ -192,11 +226,66 @@ watch(fakeScoreDetailOpen, (open) => {
         </section>
 
         <p class="an-fs-disclaimer">
-          本分数为模型辅助判断，不替代人工核实与权威信源；传播决策请结合事实要点与证据路径综合考量。
+          本分数由模型生成，仅供辅助阅读，不构成对事实真假的法律或学术认定；涉及转发、报道或研判请以权威信源与人工核实为准。
         </p>
 
         <div class="an-fs-actions">
           <button type="button" class="an-fs-btn" @click="fakeScoreDetailOpen = false">知道了</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="credDetailOpen && result"
+      class="an-fs-overlay an-cred-overlay"
+      role="presentation"
+      @click.self="credDetailOpen = false"
+    >
+      <div
+        class="an-fs-modal an-cred-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="an-cred-title"
+        tabindex="-1"
+        @click.stop
+        @keyup.escape="credDetailOpen = false"
+      >
+        <div class="an-fs-modal-head">
+          <div>
+            <p class="an-cred-kicker">TruthLens · 阅读提示</p>
+            <h2 id="an-cred-title" class="an-fs-title">可信度是怎么来的？</h2>
+          </div>
+          <button type="button" class="an-fs-close" aria-label="关闭" @click="credDetailOpen = false">×</button>
+        </div>
+
+        <div class="an-cred-hero">
+          <div class="an-cred-hero-score">
+            <span class="an-cred-hero-num">{{ result.credibilityScore ?? '—' }}</span>
+            <span class="an-fs-hero-unit">/ 100</span>
+            <span v-if="credTierHint" class="an-tier-pill">{{ credTierHint }}</span>
+          </div>
+          <p class="an-cred-hero-hint">
+            分数<strong>越高</strong>表示模型越倾向于认为该内容<strong>整体更可信</strong>；它与「虚假风险参考分」独立计算，可能不完全一致，请交叉阅读。
+          </p>
+        </div>
+
+        <section class="an-fs-section">
+          <h3 class="an-fs-h3">计算思路（通俗版）</h3>
+          <ul class="an-fs-list">
+            <li>综合<strong>来源可靠性</strong>、<strong>事实陈述一致性</strong>，并对<strong>情绪煽动</strong>与<strong>传播误导倾向</strong>做惩罚性扣分。</li>
+            <li>下方「可信度构成」雷达里，<strong>情绪克制 / 传播克制</strong>已将原始指标换算为「越高越好」，便于一眼读懂。</li>
+            <li>本分数为模型辅助判断，不替代您对原文与出处的独立核实。</li>
+          </ul>
+        </section>
+
+        <p class="an-fs-disclaimer an-cred-disclaimer">
+          若您发现与事实不符，请以权威信源与人工核验为准。
+        </p>
+
+        <div class="an-fs-actions">
+          <button type="button" class="an-fs-btn an-cred-btn" @click="credDetailOpen = false">知道了</button>
         </div>
       </div>
     </div>
@@ -238,22 +327,36 @@ watch(fakeScoreDetailOpen, (open) => {
             <button
               v-if="result.formulaFakeScore != null"
               type="button"
-              class="an-fs-trigger"
+              class="an-fs-trigger an-score-tier"
+              :class="'an-score-tier--' + fakeFormulaTierSuffix"
               @click="fakeScoreDetailOpen = true"
             >
-              <span class="an-metric-label">FakeScore（公式）· 点击查看依据</span>
+              <span class="an-metric-label">虚假风险参考分 · 点击查看说明</span>
               <span class="an-fs-trigger-row">
-                <span class="an-metric-value">{{ Number(result.formulaFakeScore).toFixed(4) }}</span>
+                <span class="an-metric-value an-metric-value--hero-fake">{{
+                  Number(result.formulaFakeScore).toFixed(4)
+                }}</span>
                 <span class="an-metric-hint">/ 100</span>
+                <span class="an-tier-pill">{{ fakeFormulaTierHint }}</span>
                 <span class="an-fs-chev" aria-hidden="true">›</span>
               </span>
-              <span class="an-fs-trigger-sub">12 维特征 · 通义千问抽取 · 线性加权百分制</span>
+              <span class="an-fs-trigger-sub">多维度信号综合 · 可与可信度对照阅读</span>
             </button>
-            <div class="an-metric">
-              <span class="an-metric-label">可信度</span>
-              <span class="an-metric-value">{{ result.credibilityScore }}</span>
-            </div>
-            <div class="an-metric">
+            <button
+              type="button"
+              class="an-cred-trigger an-metric an-score-tier"
+              :class="'an-score-tier--' + credTierSuffix"
+              @click="credDetailOpen = true"
+            >
+              <span class="an-metric-label">可信度 · 点击查看说明</span>
+              <span class="an-cred-trigger-row">
+                <span class="an-metric-value an-metric-value--hero-cred">{{ result.credibilityScore }}</span>
+                <span class="an-tier-pill an-tier-pill--compact">{{ credTierHint }}</span>
+                <span class="an-fs-chev" aria-hidden="true">›</span>
+              </span>
+              <span class="an-cred-trigger-sub">与虚假风险分独立 · 可对照雷达</span>
+            </button>
+            <div class="an-metric" :class="riskLevelTone">
               <span class="an-metric-label">风险</span>
               <span class="an-metric-value an-metric-value--sub">{{ result.riskLevel }}</span>
               <span class="an-metric-hint">{{ result.verdict }}</span>
@@ -262,15 +365,22 @@ watch(fakeScoreDetailOpen, (open) => {
         </section>
 
         <section class="an-sheet">
-          <p class="an-eyebrow">风险维度</p>
-          <div class="an-radar-box">
-            <RadarChart :dimensions="result.dimensions" />
+          <p class="an-eyebrow">维度雷达</p>
+          <p class="an-radar-lead">左：虚假风险信号（越高越需警惕）· 右：可信度构成（越高越好）</p>
+          <div class="an-radar-grid">
+            <div class="an-radar-card">
+              <p class="an-radar-cap">虚假风险</p>
+              <RadarChart :dimensions="result.dimensions" :features="fsModel?.features ?? null" variant="fake" />
+            </div>
+            <div class="an-radar-card">
+              <p class="an-radar-cap">可信度构成</p>
+              <RadarChart :dimensions="result.dimensions" variant="credibility" />
+            </div>
           </div>
         </section>
 
-        <section class="an-sheet an-sheet--flush an-sheet--last">
+        <section class="an-sheet an-sheet--flush">
           <p class="an-eyebrow">证据路径</p>
-          <!-- 原因与建议已并入各步骤展开面板，避免与证据路径脱节 -->
           <EvidencePath
             :steps="steps"
             :credibility-score="result.credibilityScore"
@@ -281,6 +391,15 @@ watch(fakeScoreDetailOpen, (open) => {
             :risk-level="result.riskLevel"
             :verdict="result.verdict"
           />
+        </section>
+
+        <section v-if="hasAiReport" class="an-sheet an-sheet--ai an-sheet--last">
+          <p class="an-eyebrow">AI 总结报告</p>
+          <div class="an-ai-report markdown-body" v-html="aiReportHtml" />
+        </section>
+        <section v-else-if="result" class="an-sheet an-sheet--ai an-sheet--last">
+          <p class="an-eyebrow">AI 总结报告</p>
+          <p class="an-ai-placeholder">本轮未生成长文总结，请结合上方结论与证据路径阅读。</p>
         </section>
       </div>
     </div>
@@ -368,16 +487,25 @@ watch(fakeScoreDetailOpen, (open) => {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 10px 12px 12px;
+  padding: 10px 14px 14px;
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  -ms-overflow-style: auto;
 }
 
 .an-scroll::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-  display: none;
+  width: 8px;
+  height: 8px;
+  display: block;
+}
+
+.an-scroll::-webkit-scrollbar-thumb {
+  background: rgba(120, 113, 108, 0.45);
+  border-radius: 999px;
+}
+
+.an-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .an-enter {
@@ -530,18 +658,123 @@ watch(fakeScoreDetailOpen, (open) => {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(4px);
+  background: rgba(15, 23, 42, 0.5);
+  backdrop-filter: blur(8px);
 }
 
 .an-fs-modal {
-  width: min(520px, 100%);
-  max-height: min(88vh, 720px);
+  width: min(760px, 100%);
+  max-height: min(90vh, 860px);
   overflow-y: auto;
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
-  padding: 18px 18px 16px;
+  border-radius: 18px;
+  background: linear-gradient(165deg, #ffffff 0%, #fafbfc 100%);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 24px 64px rgba(15, 23, 42, 0.2);
+  padding: 22px 24px 20px;
+}
+
+.an-cred-overlay {
+  z-index: 12001;
+}
+
+.an-cred-modal .an-fs-title {
+  color: #14532d;
+}
+
+.an-cred-kicker {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #15803d;
+}
+
+.an-cred-hero {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: linear-gradient(120deg, #f0fdf4, #fff);
+  border: 1px solid #bbf7d0;
+  margin-bottom: 16px;
+}
+
+.an-cred-hero-score {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.an-cred-hero-num {
+  font-size: 36px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #166534;
+  letter-spacing: -0.03em;
+}
+
+.an-cred-hero-hint {
+  margin: 10px 0 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #3f6212;
+}
+
+.an-cred-disclaimer {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.an-cred-btn {
+  background: linear-gradient(165deg, #15803d, #22c55e) !important;
+}
+
+.an-cred-trigger {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 12px 12px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(22, 163, 74, 0.22);
+  background: linear-gradient(145deg, #f0fdf4 0%, #fff 55%);
+  cursor: pointer;
+  transition:
+    box-shadow 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.15s ease;
+  font: inherit;
+  color: inherit;
+}
+
+.an-cred-trigger:hover {
+  border-color: rgba(22, 163, 74, 0.45);
+  box-shadow: 0 4px 14px rgba(22, 163, 74, 0.1);
+}
+
+.an-cred-trigger:focus-visible {
+  outline: 2px solid #15803d;
+  outline-offset: 2px;
+}
+
+.an-cred-trigger:active {
+  transform: scale(0.995);
+}
+
+.an-cred-trigger-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.an-cred-trigger-sub {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #86868b;
+  line-height: 1.35;
 }
 
 .an-fs-modal-head {
@@ -617,8 +850,8 @@ watch(fakeScoreDetailOpen, (open) => {
 
 .an-fs-hero-hint {
   margin: 8px 0 0;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.55;
   color: #475569;
 }
 
@@ -642,7 +875,7 @@ watch(fakeScoreDetailOpen, (open) => {
 
 .an-fs-kpi-k {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: #64748b;
   margin-bottom: 4px;
@@ -663,9 +896,9 @@ watch(fakeScoreDetailOpen, (open) => {
 .an-fs-kpi-d {
   display: block;
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 12.5px;
   color: #94a3b8;
-  line-height: 1.3;
+  line-height: 1.35;
 }
 
 .an-fs-section {
@@ -674,7 +907,7 @@ watch(fakeScoreDetailOpen, (open) => {
 
 .an-fs-h3 {
   margin: 0 0 8px;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: #0f172a;
 }
@@ -682,8 +915,8 @@ watch(fakeScoreDetailOpen, (open) => {
 .an-fs-list {
   margin: 0;
   padding-left: 1.15rem;
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 14.5px;
+  line-height: 1.58;
   color: #334155;
 }
 
@@ -700,7 +933,7 @@ watch(fakeScoreDetailOpen, (open) => {
 .an-fs-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .an-fs-table th,
@@ -711,7 +944,7 @@ watch(fakeScoreDetailOpen, (open) => {
 }
 
 .an-fs-table thead th {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -860,11 +1093,229 @@ watch(fakeScoreDetailOpen, (open) => {
   line-height: 1.35;
 }
 
-.an-radar-box {
+.an-metric.risk-high .an-metric-value--sub {
+  color: #b91c1c;
+}
+.an-metric.risk-mid .an-metric-value--sub {
+  color: #b45309;
+}
+.an-metric.risk-low .an-metric-value--sub {
+  color: #15803d;
+}
+
+.an-metric-row-hero {
   display: flex;
-  justify-content: center;
-  margin: 2px 0 0;
-  max-height: 200px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.an-metric-value--hero-cred {
+  font-size: clamp(1.65rem, 3.5vw, 2.25rem);
+  font-weight: 800;
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+
+.an-metric-value--hero-fake {
+  font-size: clamp(1.45rem, 3vw, 1.95rem);
+  font-weight: 800;
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+
+.an-tier-pill {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+  color: #475569;
+}
+
+.an-tier-pill--compact {
+  font-size: 10px;
+  padding: 2px 7px;
+}
+
+.an-score-tier.an-score-tier--cred-low {
+  background: var(--score-tier-good-bg);
+  border: 1px solid rgba(22, 163, 74, 0.28);
+}
+.an-score-tier.an-score-tier--cred-low .an-metric-value--hero-cred {
+  color: var(--score-tier-good);
+}
+
+.an-score-tier.an-score-tier--cred-mid {
+  background: var(--score-tier-mid-bg);
+  border: 1px solid rgba(180, 83, 9, 0.28);
+}
+.an-score-tier.an-score-tier--cred-mid .an-metric-value--hero-cred {
+  color: var(--score-tier-mid);
+}
+
+.an-score-tier.an-score-tier--cred-high {
+  background: var(--score-tier-bad-bg);
+  border: 1px solid rgba(185, 28, 28, 0.28);
+}
+.an-score-tier.an-score-tier--cred-high .an-metric-value--hero-cred {
+  color: var(--score-tier-bad);
+}
+
+.an-fs-trigger.an-score-tier--fake-low {
+  border-color: rgba(22, 163, 74, 0.35);
+  background: linear-gradient(145deg, var(--score-tier-good-bg) 0%, #fff 60%);
+}
+.an-fs-trigger.an-score-tier--fake-low .an-metric-value--hero-fake {
+  color: var(--score-tier-good);
+}
+
+.an-fs-trigger.an-score-tier--fake-mid {
+  border-color: rgba(180, 83, 9, 0.4);
+  background: linear-gradient(145deg, var(--score-tier-mid-bg) 0%, #fff 55%);
+}
+.an-fs-trigger.an-score-tier--fake-mid .an-metric-value--hero-fake {
+  color: var(--score-tier-mid);
+}
+
+.an-fs-trigger.an-score-tier--fake-high {
+  border-color: rgba(185, 28, 28, 0.45);
+  background: linear-gradient(145deg, var(--score-tier-bad-bg) 0%, #fff 50%);
+}
+.an-fs-trigger.an-score-tier--fake-high .an-metric-value--hero-fake {
+  color: var(--score-tier-bad);
+}
+
+.an-radar-lead {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.an-radar-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-items: stretch;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+@media (max-width: 720px) {
+  .an-radar-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.an-radar-card {
+  min-width: 0;
+  padding: 8px 8px 4px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fafafa 0%, #fff 100%);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.an-radar-cap {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  text-align: center;
+}
+
+.an-sheet--ai {
+  border: 1px solid rgba(185, 28, 28, 0.12);
+  background: linear-gradient(180deg, #fff8f8 0%, #fffdf8 100%);
+  padding: 20px 22px 22px;
+}
+
+.an-ai-report {
+  margin-top: 8px;
+  font-size: 15px;
+  line-height: 1.82;
+  color: #1c1917;
+  letter-spacing: -0.012em;
+}
+
+.an-ai-report :deep(h1) {
+  margin: 0 0 16px;
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: #7f1d1d;
+  line-height: 1.28;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(185, 28, 28, 0.15);
+  letter-spacing: -0.03em;
+}
+
+.an-ai-report :deep(h2) {
+  margin: 24px 0 12px;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #991b1b;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+}
+
+.an-ai-report :deep(h3) {
+  margin: 18px 0 10px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #44403c;
+  letter-spacing: -0.015em;
+}
+
+.an-ai-report :deep(p) {
+  margin: 0 0 14px;
+  text-indent: 2em;
+  text-align: justify;
+  text-justify: inter-ideograph;
+}
+
+.an-ai-report :deep(li > p) {
+  text-indent: 0;
+  margin-bottom: 8px;
+}
+
+.an-ai-report :deep(blockquote p) {
+  text-indent: 0;
+}
+
+.an-ai-report :deep(ul),
+.an-ai-report :deep(ol) {
+  margin: 0 0 14px;
+  padding-left: 1.5rem;
+}
+
+.an-ai-report :deep(li) {
+  margin: 0 0 8px;
+  line-height: 1.65;
+}
+
+.an-ai-report :deep(strong) {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.an-ai-report :deep(blockquote) {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-left: 3px solid rgba(185, 28, 28, 0.45);
+  background: rgba(254, 242, 242, 0.5);
+  border-radius: 0 8px 8px 0;
+  color: #475569;
+}
+
+.an-ai-placeholder {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #64748b;
 }
 
 @media (max-width: 640px) {

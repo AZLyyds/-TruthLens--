@@ -13,6 +13,7 @@ const conflictsOpen = ref(true)
 const hoveredRadarAxis = ref(-1)
 const animatedRadar = ref([0, 0, 0, 0])
 const radarAnimating = ref(false)
+const MULTI_CACHE_KEY = 'truthlens_multi_analysis_cache_v2'
 
 const isUrlInput = (value) => /^https?:\/\//i.test(String(value || '').trim())
 const hasEnoughInputs = computed(() => inputItems.value.filter((v) => String(v || '').trim()).length >= 2)
@@ -88,32 +89,66 @@ function deriveRadarScores(o) {
 
 const radarTarget = computed(() => deriveRadarScores(output.value))
 
-const suggestionSteps = [
-  {
-    icon: '✅',
-    title: '保留权威结论',
-    desc: '优先采信高权威来源的核心判断，降低噪声叙事干扰。',
-    sourceLine: '优先保留高权威来源结论',
-  },
-  {
-    icon: '🔍',
-    title: '追溯冲突来源',
-    desc: '对冲突段落标注出处，回溯原文与上下文。',
-    sourceLine: '标记冲突段落并追溯原出处',
-  },
-  {
-    icon: '🔍',
-    title: '人工复核校验',
-    desc: '在关键分歧点触发人工复核，避免误传播。',
-    sourceLine: '触发人工复核流程',
-  },
-  {
-    icon: '🚨',
-    title: '同步预警策略',
-    desc: '将高风险结论同步至边缘端策略，便于联动处置。',
-    sourceLine: '同步预警到边缘端策略',
-  },
-]
+/** 建议动作：由接口字段组合，信息密度高 */
+const actionCards = computed(() => {
+  const o = output.value
+  if (!o) return []
+  const cards = []
+  const score = o.consistencyScore
+  if (typeof score === 'number' && !Number.isNaN(score)) {
+    const s = Math.round(score)
+    let hint = '可优先采信多源重合信息，对单一来源保持审慎。'
+    if (s >= 75) hint = '整体对齐度高，可将一致事实作为工作底稿，仍建议保留原文链接备查。'
+    else if (s < 40) hint = '冲突信号偏多，建议暂停二次传播，按下列分歧项逐项核对。'
+    else if (s < 70) hint = '存在可解释的差异，建议对下列分歧与缺失项做定向核验后再引用。'
+    cards.push({
+      type: 'score',
+      tag: '一致性',
+      title: `综合一致性 ${s} 分`,
+      body: hint,
+    })
+  }
+  const actions = Array.isArray(o.deepAnalysis?.actionSuggestions)
+    ? o.deepAnalysis.actionSuggestions.filter(Boolean)
+    : []
+  actions.forEach((text, i) => {
+    cards.push({
+      type: 'action',
+      tag: '执行',
+      title: `建议 ${i + 1}`,
+      body: String(text),
+    })
+  })
+  const conflicts = Array.isArray(o.conflicts) ? o.conflicts.filter(Boolean) : []
+  conflicts.slice(0, 5).forEach((text, i) => {
+    cards.push({
+      type: 'conflict',
+      tag: '分歧',
+      title: `冲突 ${i + 1}`,
+      body: String(text),
+    })
+  })
+  const miss = Array.isArray(o.deepAnalysis?.missingInfo) ? o.deepAnalysis.missingInfo.filter(Boolean) : []
+  miss.slice(0, 4).forEach((text, i) => {
+    cards.push({
+      type: 'missing',
+      tag: '缺失',
+      title: `待核实 ${i + 1}`,
+      body: String(text),
+    })
+  })
+  if (!cards.length) {
+    cards.push({
+      type: 'fallback',
+      tag: '提示',
+      title: '暂无结构化建议',
+      body: '完成比对后，将基于冲突、缺失与模型建议生成可执行项。',
+    })
+  }
+  return cards.slice(0, 14)
+})
+
+const radarGridRadii = [18, 36, 54, 72]
 
 const consistencyBarTone = computed(() => {
   const v = output.value?.consistencyScore
@@ -160,7 +195,6 @@ function radarPoints(values, scale = 1) {
 }
 
 const radarPolygonPoints = computed(() => radarPoints(animatedRadar.value, 1))
-const radarGridRings = [0.25, 0.5, 0.75, 1]
 
 function runRadarAnimation(targets) {
   radarAnimating.value = true
@@ -195,8 +229,36 @@ watch(
 )
 
 onMounted(() => {
+  try {
+    const raw = localStorage.getItem(MULTI_CACHE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed?.inputItems)) inputItems.value = parsed.inputItems.map((x) => String(x || ''))
+      if (parsed?.output && typeof parsed.output === 'object') output.value = parsed.output
+    }
+  } catch {
+    /* ignore cache */
+  }
   if (output.value) runRadarAnimation(deriveRadarScores(output.value))
 })
+
+watch(
+  () => [inputItems.value, output.value],
+  () => {
+    try {
+      localStorage.setItem(
+        MULTI_CACHE_KEY,
+        JSON.stringify({
+          inputItems: inputItems.value,
+          output: output.value,
+        }),
+      )
+    } catch {
+      /* ignore */
+    }
+  },
+  { deep: true },
+)
 
 const onExport = async () => {
   if (!output.value) return
@@ -367,25 +429,45 @@ const runCompare = async () => {
 <template>
   <div class="page page-analysis multi-analysis">
     <main class="panel-layout multi-main">
-      <section class="card io-panel multi-card-enter multi-hover-card" style="--delay: 0s">
+      <section class="card io-panel multi-card-enter multi-hover-card multi-input-panel" style="--delay: 0s">
         <div class="multi-input-head">
-          <h2>多源输入（text / URL）</h2>
-          <button class="action-btn ghost" type="button" @click="addInput">增加输入</button>
+          <h2>多源输入</h2>
+          <button class="action-btn ghost" type="button" @click="addInput">增加来源</button>
         </div>
-        <div v-for="(item, idx) in inputItems" :key="idx" class="multi-input-row">
-          <h2>输入 {{ idx + 1 }}（text / URL）</h2>
-          <textarea v-model="inputItems[idx]" rows="4" :placeholder="`输入第${idx + 1}篇新闻文本或URL`" />
-          <button
-            v-if="inputItems.length > 2"
-            type="button"
-            class="multi-remove-btn"
-            @click="removeInput(idx)"
-          >
-            删除
-          </button>
+        <p class="multi-input-lead">每行一个正文或 http(s) 链接，至少两条；样式与单篇分析输入区一致。</p>
+        <div v-for="(item, idx) in inputItems" :key="idx" class="mi-card">
+          <div class="mi-decor" aria-hidden="true">
+            <svg class="mi-decor-svg" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="100" cy="100" r="78" stroke="currentColor" stroke-width="1.2" opacity="0.22" />
+              <circle cx="100" cy="100" r="52" stroke="currentColor" stroke-width="1" opacity="0.32" />
+              <circle cx="100" cy="100" r="26" fill="currentColor" opacity="0.07" />
+            </svg>
+          </div>
+          <div class="mi-blobs" aria-hidden="true" />
+          <div class="mi-shell">
+            <div class="mi-row-title">
+              <h3 class="mi-title">来源 {{ idx + 1 }}</h3>
+              <button
+                v-if="inputItems.length > 2"
+                type="button"
+                class="mi-remove"
+                @click="removeInput(idx)"
+              >
+                删除
+              </button>
+            </div>
+            <p class="mi-hint">正文或链接</p>
+            <textarea
+              v-model="inputItems[idx]"
+              class="mi-field"
+              rows="4"
+              spellcheck="false"
+              :placeholder="`粘贴第 ${idx + 1} 条新闻全文或可访问链接`"
+            />
+          </div>
         </div>
-        <button class="action-btn" :disabled="isLoading" @click="runCompare">
-          {{ isLoading ? '分析中...' : '开始一致性分析' }}
+        <button class="action-btn mi-run" :disabled="isLoading || !hasEnoughInputs" @click="runCompare">
+          {{ isLoading ? '分析中…' : '开始一致性分析' }}
         </button>
       </section>
 
@@ -393,6 +475,16 @@ const runCompare = async () => {
         <div class="multi-output-head">
           <h3>输出（output）</h3>
           <button type="button" class="action-btn ghost" :disabled="!output" @click="onExport">导出PDF</button>
+        </div>
+        <div v-if="isLoading" class="multi-loading-skeleton" role="status" aria-live="polite">
+          <div class="ml-row ml-row--title shimmer" />
+          <div class="ml-row shimmer" />
+          <div class="ml-row shimmer" />
+          <div class="ml-grid">
+            <div class="ml-card shimmer" />
+            <div class="ml-card shimmer" />
+          </div>
+          <p class="ml-tip">多源一致性分析中…</p>
         </div>
         <div v-if="errorMessage" class="multi-output-inner danger">{{ errorMessage }}</div>
         <div v-else-if="output" class="multi-output-inner multi-output-structured">
@@ -442,7 +534,7 @@ const runCompare = async () => {
 
     <section class="analysis-extra multi-extra">
       <article class="card block multi-card-enter multi-hover-card multi-radar-card" style="--delay: 0.3s">
-        <h3>一致性雷达（示意）</h3>
+        <h3>一致性雷达</h3>
         <div class="multi-radar-wrap">
           <div v-if="hoveredRadarAxis >= 0" class="multi-radar-tooltip">
             {{ radarMeta[hoveredRadarAxis].tip }}
@@ -450,32 +542,28 @@ const runCompare = async () => {
           <svg class="multi-radar-svg" viewBox="0 0 200 200" role="img" aria-label="一致性雷达图">
             <defs>
               <linearGradient id="multiRadarFill" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#fecaca" stop-opacity="0.55" />
-                <stop offset="100%" stop-color="#f87171" stop-opacity="0.45" />
+                <stop offset="0%" stop-color="#fecaca" stop-opacity="0.62" />
+                <stop offset="55%" stop-color="#f87171" stop-opacity="0.38" />
+                <stop offset="100%" stop-color="#b91c1c" stop-opacity="0.35" />
               </linearGradient>
-              <filter id="multiRadarGlow" x="-20%" y="-20%" width="140%" height="140%">
-                <feGaussianBlur stdDeviation="1.5" result="b" />
+              <filter id="multiRadarGlow" x="-25%" y="-25%" width="150%" height="150%">
+                <feGaussianBlur stdDeviation="1.8" result="b" />
                 <feMerge>
                   <feMergeNode in="b" />
                   <feMergeNode in="SourceGraphic" />
                 </feMerge>
               </filter>
             </defs>
-            <polygon
-              v-for="(ring, ri) in radarGridRings"
-              :key="ri"
-              :points="`${100},${100 - 72 * ring} ${100 + 72 * ring},100 ${100},${100 + 72 * ring} ${100 - 72 * ring},100`"
+            <circle
+              v-for="(rr, ri) in radarGridRadii"
+              :key="`rg-${ri}`"
+              cx="100"
+              cy="100"
+              :r="rr"
               fill="none"
               stroke="#e7e5e4"
-              stroke-width="0.9"
-              opacity="0.95"
-            />
-            <polygon
-              points="100,28 172,100 100,172 28,100"
-              fill="none"
-              stroke="#fca5a5"
-              stroke-width="1.2"
-              opacity="0.85"
+              stroke-width="1"
+              opacity="0.9"
             />
             <line
               v-for="(meta, idx) in radarMeta"
@@ -484,16 +572,17 @@ const runCompare = async () => {
               y1="100"
               :x2="100 + 72 * Math.cos(-Math.PI / 2 + (idx * Math.PI) / 2)"
               :y2="100 + 72 * Math.sin(-Math.PI / 2 + (idx * Math.PI) / 2)"
-              stroke="#fca5a5"
-              :stroke-width="hoveredRadarAxis === idx ? 2.2 : 1"
-              :opacity="hoveredRadarAxis === idx ? 1 : 0.4"
+              stroke="#d6d3d1"
+              :stroke-width="hoveredRadarAxis === idx ? 2 : 1"
+              :opacity="hoveredRadarAxis === idx ? 0.95 : 0.5"
               class="multi-radar-axis-line"
             />
             <polygon
               :points="radarPolygonPoints"
               fill="url(#multiRadarFill)"
               stroke="#b91c1c"
-              stroke-width="1.8"
+              stroke-width="2"
+              stroke-linejoin="round"
               filter="url(#multiRadarGlow)"
               class="multi-radar-fill-poly"
             />
@@ -502,15 +591,15 @@ const runCompare = async () => {
               :key="`pt-${meta.key}`"
               :cx="100 + ((animatedRadar[idx] || 0) / 100) * 72 * Math.cos(-Math.PI / 2 + (idx * Math.PI) / 2)"
               :cy="100 + ((animatedRadar[idx] || 0) / 100) * 72 * Math.sin(-Math.PI / 2 + (idx * Math.PI) / 2)"
-              r="3.3"
-              fill="#b91c1c"
-              stroke="#fff"
-              stroke-width="1.4"
+              r="4"
+              fill="#fff"
+              stroke="#b91c1c"
+              stroke-width="2"
             />
-            <circle cx="100" cy="100" r="16" fill="rgba(255,255,255,0.92)" stroke="#fecaca" stroke-width="1.1" />
-            <text x="100" y="96" text-anchor="middle" font-size="8" fill="#7f1d1d" font-weight="700">综合</text>
-            <text x="100" y="106" text-anchor="middle" font-size="9.5" fill="#b91c1c" font-weight="800">
-              {{ Math.round(output?.consistencyScore || 0) }}
+            <circle cx="100" cy="100" r="22" fill="rgba(255,255,255,0.95)" stroke="#fecaca" stroke-width="1.2" />
+            <text x="100" y="95" text-anchor="middle" font-size="7.5" fill="#57534e" font-weight="700">综合一致</text>
+            <text x="100" y="108" text-anchor="middle" font-size="11" fill="#b91c1c" font-weight="800">
+              {{ Math.round(output?.consistencyScore ?? 0) }}
             </text>
           </svg>
           <div
@@ -538,25 +627,23 @@ const runCompare = async () => {
             <strong>{{ animatedRadar[idx] }}%</strong>
           </div>
         </div>
-        <p class="multi-radar-hint">（示意）四轴分数由核心一致性分数与冲突项数量推导展示</p>
+        <p class="multi-radar-hint">四轴由综合一致性分与冲突条数推导，可与下方「建议动作」对照阅读。</p>
       </article>
 
       <article class="card block multi-card-enter multi-hover-card multi-suggest-card" style="--delay: 0.45s">
         <h3>建议动作</h3>
-        <div class="multi-suggest-flow">
+        <p class="multi-suggest-lead">基于本轮一致性分数、模型建议、冲突与缺失信息自动生成。</p>
+        <p v-if="!output" class="multi-action-placeholder">完成左侧分析后，将在此生成可执行建议卡片。</p>
+        <div v-else class="multi-action-grid">
           <div
-            v-for="(step, idx) in suggestionSteps"
-            :key="step.title"
-            class="multi-suggest-step"
-            :style="{ animationDelay: `${idx * 0.2}s` }"
+            v-for="(card, idx) in actionCards"
+            :key="`${card.type}-${idx}-${card.title}`"
+            class="multi-action-card"
+            :class="`multi-action-card--${card.type}`"
           >
-            <div class="multi-suggest-card-inner">
-              <span class="multi-suggest-ico">{{ step.icon }}</span>
-              <b>{{ step.title }}</b>
-              <p>{{ step.desc }}</p>
-              <span class="multi-suggest-src">{{ step.sourceLine }}</span>
-            </div>
-            <div v-if="idx < suggestionSteps.length - 1" class="multi-suggest-connector" aria-hidden="true" />
+            <span class="multi-action-tag">{{ card.tag }}</span>
+            <h4 class="multi-action-title">{{ card.title }}</h4>
+            <p class="multi-action-body">{{ card.body }}</p>
           </div>
         </div>
       </article>
@@ -574,8 +661,47 @@ const runCompare = async () => {
 
 .multi-main {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(340px, 1fr);
+  grid-template-columns: 1fr;
   gap: 12px;
+}
+
+.multi-loading-skeleton {
+  margin: 8px 0 12px;
+  padding: 12px;
+  border: 1px solid #efe2e2;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.ml-row {
+  height: 12px;
+  border-radius: 999px;
+  background: #efeceb;
+  margin-bottom: 8px;
+}
+
+.ml-row--title {
+  width: 52%;
+  height: 14px;
+}
+
+.ml-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ml-card {
+  height: 56px;
+  border-radius: 10px;
+  background: #f3f0ef;
+}
+
+.ml-tip {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: #7f1d1d;
 }
 
 .multi-main .io-panel {
@@ -595,55 +721,144 @@ const runCompare = async () => {
 .multi-input-head,
 .multi-output-head {
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 4px 0 12px;
+  padding-top: 6px;
+  text-align: center;
+}
+
+.multi-input-head h2,
+.multi-output-head h3 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.multi-input-head .action-btn,
+.multi-output-head .action-btn {
+  flex-shrink: 0;
+  margin-left: 0;
+}
+
+.multi-input-lead {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #57534e;
+}
+
+.mi-card {
+  position: relative;
+  margin-bottom: 14px;
+  padding: 18px 16px 16px;
+  border-radius: 16px;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 120% 90% at 100% 0%, rgba(185, 28, 28, 0.08), transparent 55%),
+    radial-gradient(ellipse 90% 70% at 0% 100%, rgba(120, 8, 14, 0.06), transparent 50%),
+    linear-gradient(168deg, #f5f6f8 0%, #ebecef 100%);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 2px 12px rgba(0, 0, 0, 0.04);
+}
+
+.mi-decor {
+  position: absolute;
+  right: -48px;
+  top: 50%;
+  width: 200px;
+  height: 200px;
+  transform: translateY(-50%);
+  color: rgba(185, 28, 28, 0.14);
+  pointer-events: none;
+}
+
+.mi-decor-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.mi-blobs {
+  position: absolute;
+  width: 160px;
+  height: 160px;
+  left: -70px;
+  top: 55%;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(185, 28, 28, 0.09), transparent 68%);
+  filter: blur(2px);
+  pointer-events: none;
+}
+
+.mi-shell {
+  position: relative;
+  z-index: 1;
+}
+
+.mi-row-title {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  margin-bottom: 4px;
 }
 
-.multi-input-row {
-  margin-bottom: 12px;
-  position: relative;
-  padding: 8px;
-  border-radius: 10px;
-  border: 1px solid #f1e4e4;
-  background: #fff;
+.mi-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: #1c1917;
 }
 
-.multi-input-row h2 {
-  font-size: 14px;
-  margin-bottom: 6px;
-  padding-right: 56px;
+.mi-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #78716c;
 }
 
-.multi-input-row textarea {
+.mi-field {
   width: 100%;
-  min-height: 92px;
-  border: 1px solid #e5d4d4;
-  border-radius: 10px;
-  background: #f9fafb;
-  padding: 10px 12px;
+  min-height: 100px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 12px 14px;
   font-size: 14px;
   line-height: 1.55;
   color: var(--tl-text);
+  font-family: inherit;
+  resize: vertical;
 }
 
-.multi-input-row textarea:focus {
+.mi-field:focus {
   outline: none;
-  border-color: #dca2a2;
+  border-color: rgba(185, 28, 28, 0.45);
   box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.12);
 }
 
-.multi-remove-btn {
-  position: absolute;
-  right: 10px;
-  top: 10px;
-  border: 1px solid #f1d0d0;
+.mi-remove {
+  flex-shrink: 0;
+  border: 1px solid rgba(254, 202, 202, 0.95);
   background: #fff5f5;
   color: #991b1b;
-  border-radius: 8px;
+  border-radius: 10px;
   font-size: 12px;
-  padding: 4px 8px;
+  font-weight: 600;
+  padding: 6px 10px;
   cursor: pointer;
+  font-family: inherit;
+}
+
+.mi-run {
+  width: 100%;
+  margin-top: 4px;
 }
 
 .action-btn.ghost {
@@ -656,7 +871,7 @@ const runCompare = async () => {
   border: 1px solid #f0e2e2;
   border-radius: 12px;
   background: #fff;
-  padding: 12px;
+  padding: 16px;
 }
 
 .multi-out-title {
@@ -668,27 +883,27 @@ const runCompare = async () => {
 
 .multi-ai-section {
   margin-top: 10px;
-  padding: 10px 12px;
+  padding: 18px 20px;
   border: 1px solid #f1dede;
   border-radius: 10px;
   background: #fffdfd;
 }
 
 .multi-ai-section h4 {
-  margin: 0 0 6px;
-  font-size: 14px;
+  margin: 0 0 12px;
+  font-size: 19px;
   color: #7f1d1d;
 }
 
 .multi-ai-section ul {
   margin: 0;
-  padding-left: 16px;
+  padding-left: 24px;
 }
 
 .multi-ai-section li {
-  margin: 0 0 5px;
-  font-size: 13px;
-  line-height: 1.58;
+  margin: 0 0 10px;
+  font-size: 16px;
+  line-height: 1.8;
   color: #374151;
 }
 
@@ -698,8 +913,8 @@ const runCompare = async () => {
 
 .multi-ai-conclusion {
   margin: 0;
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 16px;
+  line-height: 1.86;
   color: #374151;
 }
 
@@ -787,6 +1002,84 @@ const runCompare = async () => {
   border: 1px solid var(--tl-border);
   border-radius: 14px;
   background: #fff;
+}
+
+.multi-suggest-lead {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #57534e;
+  line-height: 1.5;
+}
+
+.multi-action-placeholder {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #fafaf9;
+  border: 1px dashed #d6d3d1;
+  font-size: 13px;
+  color: #78716c;
+  text-align: center;
+}
+
+.multi-action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.multi-action-card {
+  padding: 12px 12px 11px;
+  border-radius: 14px;
+  border: 1px solid #e7e5e4;
+  background: linear-gradient(165deg, #ffffff 0%, #fafaf9 100%);
+  box-shadow: 0 2px 10px rgba(28, 25, 23, 0.04);
+}
+
+.multi-action-card--score {
+  border-color: rgba(254, 202, 202, 0.85);
+  background: linear-gradient(165deg, #fffbfb 0%, #ffffff 100%);
+}
+
+.multi-action-card--conflict {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.multi-action-card--action {
+  border-color: rgba(185, 28, 28, 0.2);
+}
+
+.multi-action-card--missing {
+  border-color: rgba(148, 163, 184, 0.45);
+}
+
+.multi-action-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7f1d1d;
+  background: #fef2f2;
+  border: 1px solid rgba(254, 202, 202, 0.8);
+  padding: 3px 8px;
+  border-radius: 999px;
+  margin-bottom: 8px;
+}
+
+.multi-action-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #1c1917;
+  line-height: 1.35;
+}
+
+.multi-action-body {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #44403c;
 }
 
 @media (max-width: 980px) {

@@ -249,6 +249,76 @@ paths:
                     properties:
                       data:
                         $ref: "#/components/schemas/ProfileInfo"
+    put:
+      tags: [Profile]
+      summary: Update current user profile (username, email, avatar URL, password)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                  minLength: 2
+                  maxLength: 64
+                email:
+                  type: string
+                  nullable: true
+                avatarUrl:
+                  type: string
+                  nullable: true
+                  description: http(s) URL or site path starting with /
+                currentPassword:
+                  type: string
+                  description: Required when newPassword is set
+                newPassword:
+                  type: string
+                  minLength: 6
+      responses:
+        "200":
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ProfileInfo"
+  /profile/me/avatar:
+    post:
+      tags: [Profile]
+      summary: Upload avatar image (multipart field name `file`)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Stored relative URL for avatar
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          avatarUrl:
+                            type: string
+                            example: /uploads/avatars/uuid.png
   /profile/history:
     get:
       tags: [Profile]
@@ -516,8 +586,17 @@ components:
     ProfileInfo:
       type: object
       properties:
+        userId:
+          type: integer
+          format: int64
         username:
           type: string
+        email:
+          type: string
+          nullable: true
+        avatarUrl:
+          type: string
+          nullable: true
         preferences:
           type: array
           items:

@@ -46,7 +46,10 @@ const navItems = computed(() => [
 <template>
   <header class="site-topbar">
     <div class="site-topbar-inner">
-      <a class="site-logo" href="#" @click.prevent="go('/portal-screen')">TruthLens</a>
+      <a class="site-brand" href="#" @click.prevent="go('/portal-screen')">
+        <img class="site-logo-mark" src="/logo/white.svg" alt="" width="34" height="34" decoding="async" />
+        <span class="site-logo-text">TruthLens</span>
+      </a>
       <nav class="site-nav" aria-label="主导航">
         <a
           v-for="item in navItems"
@@ -76,35 +79,52 @@ const navItems = computed(() => [
 }
 
 .site-topbar-inner {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 12px 18px;
+  padding: 12px clamp(16px, 4vw, 28px) 12px clamp(10px, 2.2vw, 20px);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 16px;
   flex-wrap: wrap;
 }
 
-.site-logo {
-  font-weight: 800;
-  font-size: 1.15rem;
-  letter-spacing: 0.04em;
+.site-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   color: #fff;
   text-decoration: none;
   transition: opacity 0.2s ease;
 }
 
-.site-logo:hover {
-  opacity: 0.92;
+.site-brand:hover {
+  opacity: 0.94;
+}
+
+.site-logo-mark {
+  display: block;
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+}
+
+.site-logo-text {
+  font-weight: 800;
+  font-size: 1.12rem;
+  letter-spacing: 0.04em;
+  line-height: 1;
 }
 
 .site-nav {
+  margin-left: auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 2px 4px;
-  font-size: 0.9rem;
+  font-size: 0.95rem;
 }
 
 .site-nav a {

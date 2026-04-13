@@ -384,39 +384,43 @@ const dimLineVerify = computed(() => {
 }
 
 .path-detail {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.28s ease;
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: max-height 0.28s ease, opacity 0.22s ease, transform 0.22s ease;
   border-top: 1px solid transparent;
+  overflow: hidden;
 }
 
 .path-detail--open {
-  grid-template-rows: 1fr;
+  max-height: min(72vh, 560px);
+  opacity: 1;
+  transform: translateY(0);
   border-top-color: rgba(185, 28, 28, 0.12);
 }
 
 .path-detail-inner {
   overflow: hidden;
   min-height: 0;
+  padding: 14px 16px 16px;
+  background: linear-gradient(180deg, #fffafa, #fff);
 }
 
 .path-detail--open .path-detail-inner {
-  padding: 10px 12px 12px;
-  max-height: min(70vh, 520px);
+  max-height: min(72vh, 560px);
   overflow-y: auto;
-  background: linear-gradient(180deg, #fffafa, #fff);
   -webkit-overflow-scrolling: touch;
 }
 
 .path-detail-intro {
-  margin: 0 0 10px;
-  font-size: 12px;
-  line-height: 1.55;
+  margin: 0 0 12px;
+  font-size: 16px;
+  line-height: 1.72;
   color: #4b5563;
 }
 
 .path-block {
-  margin-bottom: 10px;
+  margin-bottom: 14px;
 }
 
 .path-block--last {
@@ -424,8 +428,8 @@ const dimLineVerify = computed(() => {
 }
 
 .path-block-title {
-  margin: 0 0 6px;
-  font-size: 11px;
+  margin: 0 0 8px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -434,14 +438,14 @@ const dimLineVerify = computed(() => {
 
 .path-ul {
   margin: 0;
-  padding-left: 1.1rem;
-  font-size: 12px;
-  line-height: 1.5;
+  padding-left: 1.2rem;
+  font-size: 15px;
+  line-height: 1.72;
   color: #1f2937;
 }
 
 .path-ul li {
-  margin-bottom: 5px;
+  margin-bottom: 8px;
 }
 
 .path-ul li:last-child {
@@ -458,7 +462,7 @@ const dimLineVerify = computed(() => {
 
 .path-dim {
   margin: 0;
-  font-size: 12px;
+  font-size: 15px;
   line-height: 1.5;
   color: #374151;
   padding: 8px 10px;
@@ -469,7 +473,7 @@ const dimLineVerify = computed(() => {
 
 .path-verdict {
   margin: 0;
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.5;
   color: #1f2937;
 }

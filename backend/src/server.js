@@ -3,6 +3,9 @@ import express from 'express'
 import cors from 'cors'
 import bcrypt from 'bcryptjs'
 import axios from 'axios'
+import fs from 'node:fs'
+import path from 'node:path'
+import multer from 'multer'
 import { randomUUID, createHash } from 'node:crypto'
 import { fail, parsePagination, success } from './utils.js'
 import { getPool, initDatabase } from './db.js'
@@ -22,6 +25,37 @@ import { FEATURE_KEYS } from './fakeScoreModel.js'
 const app = express()
 const pool = getPool()
 const PORT = Number(process.env.PORT || 3000)
+const UPLOADS_DIR = path.join(process.cwd(), 'uploads')
+const AVATARS_DIR = path.join(UPLOADS_DIR, 'avatars')
+
+function ensureAvatarUploadDir() {
+  fs.mkdirSync(AVATARS_DIR, { recursive: true })
+}
+
+const avatarStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    ensureAvatarUploadDir()
+    cb(null, AVATARS_DIR)
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase()
+    const allowed = ['.png', '.jpg', '.jpeg', '.webp']
+    const suffix = allowed.includes(ext) ? ext : '.jpg'
+    cb(null, `${randomUUID()}${suffix}`)
+  },
+})
+
+const uploadAvatar = multer({
+  storage: avatarStorage,
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (/^image\/(png|jpeg|webp)$/i.test(file.mimetype)) {
+      cb(null, true)
+      return
+    }
+    cb(new Error('只支持 PNG / JPEG / WebP 图片'))
+  },
+})
 let alertRule = { riskThreshold: 70, enabled: true }
 const agentTasks = []
 
@@ -68,6 +102,9 @@ app.use(
   }),
 )
 
+ensureAvatarUploadDir()
+app.use('/uploads', express.static(UPLOADS_DIR))
+
 async function ensureSeedData() {
   const [rows] = await pool.execute('SELECT id FROM users LIMIT 1')
   if (!rows.length) {
@@ -93,7 +130,7 @@ async function ensureSeedData() {
 
 async function getCurrentUser() {
   const [rows] = await pool.execute(
-    'SELECT id, username, preferences_json FROM users ORDER BY id ASC LIMIT 1',
+    'SELECT id, username, email, preferences_json, avatar_url FROM users ORDER BY id ASC LIMIT 1',
   )
   return rows[0] || null
 }
@@ -106,7 +143,7 @@ async function getRequestUser(req) {
     const userId = Number(matched[1])
     if (!Number.isNaN(userId)) {
       const [rows] = await pool.execute(
-        'SELECT id, username, preferences_json FROM users WHERE id = ? LIMIT 1',
+        'SELECT id, username, email, preferences_json, avatar_url FROM users WHERE id = ? LIMIT 1',
         [userId],
       )
       if (rows.length) return rows[0]
@@ -1851,6 +1888,8 @@ app.get('/api/v1/profile/me', async (req, res) => {
     success({
       userId: user.id,
       username: user.username,
+      email: user.email || null,
+      avatarUrl: user.avatar_url || null,
       preferences: parsePreferences(user.preferences_json),
       stats: {
         viewed: viewRows[0].viewed || 0,
@@ -1860,6 +1899,132 @@ app.get('/api/v1/profile/me', async (req, res) => {
     }),
   )
 })
+
+app.put('/api/v1/profile/me', async (req, res) => {
+  const user = await getRequestUser(req)
+  if (!user) return res.status(401).json(fail('请先登录', 401, 'AUTH_REQUIRED'))
+
+  const body = req.body || {}
+  const fragments = []
+  const values = []
+
+  if (body.username !== undefined) {
+    const u = String(body.username || '').trim()
+    if (u.length < 2 || u.length > 64) {
+      return res.status(422).json(fail('用户名长度须为 2–64 字符', 422, 'VALIDATION_ERROR'))
+    }
+    const [dup] = await pool.execute('SELECT id FROM users WHERE username = ? AND id <> ?', [u, user.id])
+    if (dup.length) return res.status(409).json(fail('用户名已被占用', 409, 'DUPLICATE'))
+    fragments.push('username = ?')
+    values.push(u)
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'email')) {
+    const raw = body.email
+    const e = raw == null || String(raw).trim() === '' ? null : String(raw).trim()
+    if (e === null) {
+      fragments.push('email = NULL')
+    } else {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+        return res.status(422).json(fail('邮箱格式不正确', 422, 'VALIDATION_ERROR'))
+      }
+      const [dupE] = await pool.execute('SELECT id FROM users WHERE email = ? AND id <> ?', [e, user.id])
+      if (dupE.length) return res.status(409).json(fail('邮箱已被占用', 409, 'DUPLICATE'))
+      fragments.push('email = ?')
+      values.push(e)
+    }
+  }
+
+  if (body.avatarUrl !== undefined) {
+    const raw = body.avatarUrl
+    const a = raw == null || String(raw).trim() === '' ? null : String(raw).trim()
+    if (a === null) {
+      fragments.push('avatar_url = NULL')
+    } else {
+      if (a.length > 2048) return res.status(422).json(fail('头像地址过长', 422, 'VALIDATION_ERROR'))
+      if (!(a.startsWith('http://') || a.startsWith('https://') || a.startsWith('/'))) {
+        return res.status(422).json(fail('头像须为 http(s) 链接或站内路径（以 / 开头）', 422, 'VALIDATION_ERROR'))
+      }
+      fragments.push('avatar_url = ?')
+      values.push(a)
+    }
+  }
+
+  const { currentPassword, newPassword } = body
+  if (newPassword != null && String(newPassword) !== '') {
+    if (currentPassword == null || String(currentPassword) === '') {
+      return res.status(422).json(fail('修改密码需提供当前密码', 422, 'VALIDATION_ERROR'))
+    }
+    const [ph] = await pool.execute('SELECT password_hash FROM users WHERE id = ? LIMIT 1', [user.id])
+    if (!ph.length) return res.status(404).json(fail('user not found', 404, 'NOT_FOUND'))
+    const ok = await bcrypt.compare(String(currentPassword), ph[0].password_hash)
+    if (!ok) return res.status(403).json(fail('当前密码不正确', 403, 'AUTH_FAILED'))
+    if (String(newPassword).length < 6) {
+      return res.status(422).json(fail('新密码至少 6 位', 422, 'VALIDATION_ERROR'))
+    }
+    fragments.push('password_hash = ?')
+    values.push(await bcrypt.hash(String(newPassword), 10))
+  }
+
+  if (!fragments.length) {
+    return res.status(422).json(fail('没有可更新字段', 422, 'VALIDATION_ERROR'))
+  }
+
+  values.push(user.id)
+  await pool.execute(`UPDATE users SET ${fragments.join(', ')} WHERE id = ?`, values)
+
+  const [fresh] = await pool.execute(
+    'SELECT id, username, email, preferences_json, avatar_url FROM users WHERE id = ? LIMIT 1',
+    [user.id],
+  )
+  const row = fresh[0]
+  const [qhRows] = await pool.execute('SELECT COUNT(*) AS analyzed FROM query_history WHERE user_id = ?', [user.id])
+  const [statsRows] = await pool.execute(
+    `
+    SELECT SUM(CASE WHEN risk_level = '高风险' THEN 1 ELSE 0 END) AS highRiskHits
+    FROM analysis_records
+    WHERE user_id = ?
+    `,
+    [user.id],
+  )
+  const [viewRows] = await pool.execute('SELECT COUNT(*) AS viewed FROM news')
+  res.json(
+    success({
+      userId: row.id,
+      username: row.username,
+      email: row.email || null,
+      avatarUrl: row.avatar_url || null,
+      preferences: parsePreferences(row.preferences_json),
+      stats: {
+        viewed: viewRows[0].viewed || 0,
+        analyzed: Number(qhRows[0]?.analyzed || 0),
+        highRiskHits: Number(statsRows[0]?.highRiskHits || 0),
+      },
+    }),
+  )
+})
+
+app.post(
+  '/api/v1/profile/me/avatar',
+  (req, res, next) => {
+    uploadAvatar.single('file')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json(fail(err.message || '上传失败', 400, 'UPLOAD_ERROR'))
+      }
+      next()
+    })
+  },
+  async (req, res) => {
+    const user = await getRequestUser(req)
+    if (!user) return res.status(401).json(fail('请先登录', 401, 'AUTH_REQUIRED'))
+    if (!req.file) {
+      return res.status(422).json(fail('请选择图片文件（表单字段名 file）', 422, 'VALIDATION_ERROR'))
+    }
+    const publicPath = `/uploads/avatars/${req.file.filename}`
+    await pool.execute('UPDATE users SET avatar_url = ? WHERE id = ?', [publicPath, user.id])
+    res.json(success({ avatarUrl: publicPath }))
+  },
+)
 
 app.put('/api/v1/profile/me/preferences', async (req, res) => {
   const { preferences } = req.body || {}

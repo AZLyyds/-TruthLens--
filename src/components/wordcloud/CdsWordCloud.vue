@@ -20,7 +20,7 @@ const emit = defineEmits<{
 
 const containerRef = ref<HTMLDivElement | null>(null)
 const svgW = ref(600)
-const svgH = ref(220)
+const svgH = ref(260)
 
 type LayoutWord = {
   text: string
@@ -48,34 +48,53 @@ const wordsKey = computed(() => {
   return safeWords.value.map((w) => `${w.text}:${w.size}`).join('|')
 })
 
-const fontFamily = "Segoe UI, 'PingFang SC', 'Microsoft YaHei', sans-serif"
+const fontFamily =
+  "'Source Han Sans SC', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', 'Segoe UI', sans-serif"
 
-const wordColor = (text: string) => {
+const PALETTE = ['#b91c1c', '#b45309', '#15803d', '#9a3412', '#166534', '#7f1d1d']
+
+const wordColor = (text: string, size: number) => {
   const selected = props.selected && props.selected === text
   if (selected) return '#b91c1c'
-  return '#6b7280'
+  const s = Math.max(12, Math.min(42, size))
+  // 高频偏红，中频偏橙，低频偏绿，整体低饱和
+  const t = (s - 12) / (42 - 12)
+  if (t > 0.68) {
+    const r = Math.round(142 + (t - 0.68) * 120)
+    const g = Math.round(32 + (1 - t) * 42)
+    const b = Math.round(32 + (1 - t) * 38)
+    return `rgb(${Math.min(185, r)},${Math.min(74, g)},${Math.min(74, b)})`
+  }
+  if (t > 0.38) {
+    const r = Math.round(148 + (t - 0.38) * 56)
+    const g = Math.round(74 + (1 - t) * 28)
+    const b = Math.round(9 + (1 - t) * 18)
+    return `rgb(${Math.min(184, r)},${Math.min(122, g)},${Math.min(55, b)})`
+  }
+  const h = hashString(text)
+  return PALETTE[h % PALETTE.length]
 }
 
 const selectedWord = computed(() => props.selected || '')
 
-const fontSizeFor = (size: number) => Math.max(10, Math.min(44, size))
+const fontSizeFor = (size: number) => Math.max(12, Math.min(42, size + 1))
 
 const wordOpacityFor = (size: number) => {
   // 让小词更淡，提升艺术感与层次
-  const s = Math.max(10, Math.min(44, size))
-  return 0.78 + ((s - 10) / (44 - 10)) * 0.22
+  const s = Math.max(12, Math.min(42, size))
+  return 0.82 + ((s - 12) / (42 - 12)) * 0.18
 }
 
 const strokeWidthFor = (size: number) => {
-  const s = Math.max(10, Math.min(44, size))
+  const s = Math.max(12, Math.min(42, size))
   // 描边随字号略微变化
-  return 0.8 + ((s - 10) / (44 - 10)) * 0.7
+  return 0.7 + ((s - 12) / (42 - 12)) * 0.6
 }
 
 const fontWeightFor = (size: number) => {
-  const s = Math.max(10, Math.min(44, size))
+  const s = Math.max(12, Math.min(42, size))
   // 大词更粗
-  return 600 + Math.round(((s - 10) / (44 - 10)) * 200)
+  return 620 + Math.round(((s - 12) / (42 - 12)) * 180)
 }
 
 function hashString(input: string) {
@@ -117,20 +136,20 @@ const buildLayout = () => {
   layout = cloud()
     .size([w, h])
     .words(wordItems)
-    .padding(4)
+    .padding(6)
     // 使用可重复的随机数，避免重排导致词云“抽搐”
     .random(mulberry32(seed))
     .rotate((d: any) => {
       // 旋转也用文本决定，让同一个词在同一次 seed 下固定角度
       const t = hashString(String(d.text))
-      const choices = [0, 0, -30, 0, 30, 90]
+      const choices = [0, 0, -24, 0, 24]
       return choices[(t + seed) % choices.length]
     })
     .font(fontFamily)
     .fontSize((d: any) => {
       const s = Number(d.size || 12)
       // 控制字体大小范围
-      return Math.max(10, Math.min(44, s))
+      return Math.max(12, Math.min(42, s + 1))
     })
     .spiral('archimedean')
     .on('end', (out: any[]) => {
@@ -211,6 +230,17 @@ const ariaLabel = computed(() => {
       preserveAspectRatio="xMidYMid meet"
       style="display: block; overflow: hidden"
     >
+      <defs>
+        <filter id="tl-wc-shadow" x="-35%" y="-35%" width="170%" height="170%">
+          <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#0f172a" flood-opacity="0.2" />
+          <feDropShadow dx="0" dy="0" stdDeviation="0.5" flood-color="#ffffff" flood-opacity="0.35" />
+        </filter>
+        <linearGradient id="tl-wc-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="rgba(254, 242, 242, 0.5)" />
+          <stop offset="100%" stop-color="rgba(255, 255, 255, 0.2)" />
+        </linearGradient>
+      </defs>
+      <rect :width="svgW" :height="svgH" x="0" y="0" fill="url(#tl-wc-bg)" opacity="0.9" />
       <g :transform="`translate(${svgW / 2}, ${svgH / 2})`">
         <text
           v-for="w in layoutWords"
@@ -218,17 +248,17 @@ const ariaLabel = computed(() => {
           :transform="`translate(${w.x}, ${w.y}) rotate(${w.rotate})`"
           :text-anchor="'middle'"
           :dominant-baseline="'middle'"
-          :fill="wordColor(w.text)"
+          :fill="wordColor(w.text, w.size)"
           :font-family="fontFamily"
           :font-size="fontSizeFor(w.size)"
           :font-weight="fontWeightFor(w.size)"
           :opacity="wordOpacityFor(w.size)"
-          :stroke="w.text === selectedWord ? 'rgba(248,113,113,0.9)' : 'rgba(0,0,0,0.14)'"
+          :stroke="w.text === selectedWord ? 'rgba(248,113,113,0.95)' : 'rgba(255,255,255,0.85)'"
           :stroke-width="strokeWidthFor(w.size)"
           paint-order="stroke fill"
+          filter="url(#tl-wc-shadow)"
           :style="{ cursor: 'pointer', userSelect: 'none' }"
           @click="onSelect(w.text)"
-          @mouseenter="() => {}"
         >
           {{ w.text }}
         </text>

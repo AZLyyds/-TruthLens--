@@ -20,6 +20,7 @@ const schemaStatements = [
     email VARCHAR(128) NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     preferences_json JSON NULL,
+    avatar_url VARCHAR(2048) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   )
@@ -174,6 +175,20 @@ export async function ensureNewsTruthLensExtrasColumn(pool) {
   }
 }
 
+export async function ensureUsersAvatarUrlColumn(pool) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`,
+    )
+    if (!rows?.length) return
+    const names = new Set(rows.map((r) => r.COLUMN_NAME))
+    if (names.has('avatar_url')) return
+    await pool.query(`ALTER TABLE users ADD COLUMN avatar_url VARCHAR(2048) NULL`)
+  } catch (e) {
+    console.warn('ensureUsersAvatarUrlColumn:', e.message)
+  }
+}
+
 export async function initDatabase() {
   for (const statement of schemaStatements) {
     await pool.query(statement)
@@ -182,6 +197,7 @@ export async function initDatabase() {
   await migrateNewsTableDropUnusedColumns(pool)
   await ensureNewsImageUrlColumn(pool)
   await ensureNewsTruthLensExtrasColumn(pool)
+  await ensureUsersAvatarUrlColumn(pool)
 }
 
 export function getPool() {
