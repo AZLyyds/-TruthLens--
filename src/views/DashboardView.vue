@@ -147,6 +147,86 @@ watch(
   { deep: true, immediate: true },
 )
 
+const kpiEnergy = computed(() => {
+  const collected = Math.max(0, Math.round(num(kpiDisplay.value.todayCollected, 0)))
+  const analyzed = Math.max(0, Math.round(num(kpiDisplay.value.todayAnalyzed, 0)))
+  const highRisk = Math.max(0, Math.round(num(kpiDisplay.value.chinaHighRisk, 0)))
+  const credibility = Math.max(0, Math.min(100, num(kpiDisplay.value.avgCredibility, 0)))
+  return { collected, analyzed, highRisk, credibility }
+})
+
+function noise(index, seed) {
+  const x = Math.sin((index + 1) * 12.9898 + seed * 78.233) * 43758.5453
+  return x - Math.floor(x)
+}
+
+function makeParticles(count, seed, sizeMin = 2, sizeMax = 3) {
+  return Array.from({ length: count }, (_, i) => {
+    const n1 = noise(i, seed)
+    const n2 = noise(i + 19, seed)
+    const n3 = noise(i + 47, seed)
+    const n4 = noise(i + 71, seed)
+    return {
+      left: `${Math.round(n1 * 100)}%`,
+      top: `${Math.round(8 + n2 * 78)}%`,
+      size: `${(sizeMin + n3 * (sizeMax - sizeMin)).toFixed(2)}px`,
+      opacity: (0.3 + n4 * 0.7).toFixed(2),
+      delay: `${(n3 * 2.2).toFixed(2)}s`,
+      duration: `${(1.8 + n4 * 2.2).toFixed(2)}s`,
+    }
+  })
+}
+
+const collectedParticles = computed(() => {
+  const v = kpiEnergy.value.collected
+  // 0 时保持稀疏，数值越高越密集
+  const count = v === 0 ? 10 : Math.min(70, 14 + Math.round(Math.sqrt(v) * 8))
+  return makeParticles(count, v + 11, 2, 3)
+})
+
+const analyzedWaveLayers = computed(() => {
+  const v = kpiEnergy.value.analyzed
+  const count = Math.max(1, Math.min(6, v || 1))
+  return Array.from({ length: count }, (_, i) => ({
+    delay: `${(i * 0.42).toFixed(2)}s`,
+    duration: `${(2 + i * 0.25).toFixed(2)}s`,
+  }))
+})
+
+const highRiskPulseLayers = computed(() => {
+  const v = kpiEnergy.value.highRisk
+  const count = Math.max(1, Math.min(8, v || 1))
+  return Array.from({ length: count }, (_, i) => ({
+    delay: `${(i * 0.16).toFixed(2)}s`,
+    duration: `${(0.72 + (i % 3) * 0.12).toFixed(2)}s`,
+  }))
+})
+
+const highRiskParticles = computed(() => {
+  const v = kpiEnergy.value.highRisk
+  const count = Math.min(90, 20 + Math.max(1, v) * 11)
+  return makeParticles(count, v * 17 + 5, 2, 3.2)
+})
+
+const credibilityRing = computed(() => {
+  const pct = kpiEnergy.value.credibility
+  const total = 56
+  const active = Math.max(1, Math.round((pct / 100) * total))
+  const dots = Array.from({ length: total }, (_, i) => {
+    const angle = (i / total) * Math.PI * 2 - Math.PI / 2
+    const r = 39
+    const x = 50 + Math.cos(angle) * r
+    const y = 50 + Math.sin(angle) * r
+    return {
+      left: `${x.toFixed(2)}%`,
+      top: `${y.toFixed(2)}%`,
+      active: i < active,
+      delay: `${(i * 0.045).toFixed(2)}s`,
+    }
+  })
+  return { pct, dots }
+})
+
 const keywordWords = computed(() => {
   const k = getFirst(screen.value, ['keywords', 'keywordList'], []) || []
   if (!Array.isArray(k)) return []
@@ -1541,6 +1621,14 @@ onBeforeUnmount(() => {
           <span class="tl-kpi-label">今日采集新闻总量</span>
         </div>
         <strong class="tl-kpi-num tl-kpi-num--cyan">{{ kpiDisplay.todayCollected }}</strong>
+        <div class="tl-kpi-energy tl-kpi-energy--flow" aria-hidden="true">
+          <span
+            v-for="(p, idx) in collectedParticles"
+            :key="`cp-${idx}`"
+            class="tl-particle tl-particle--blue"
+            :style="{ left: p.left, top: p.top, width: p.size, height: p.size, opacity: p.opacity, animationDelay: p.delay, animationDuration: p.duration }"
+          />
+        </div>
       </article>
       <article class="tl-kpi tl-kpi-tile">
         <div class="tl-kpi-head">
@@ -1552,6 +1640,14 @@ onBeforeUnmount(() => {
           <span class="tl-kpi-label">今日分析完成量</span>
         </div>
         <strong class="tl-kpi-num tl-kpi-num--cyan">{{ kpiDisplay.todayAnalyzed }}</strong>
+        <div class="tl-kpi-energy tl-kpi-energy--wave" aria-hidden="true">
+          <span
+            v-for="(w, idx) in analyzedWaveLayers"
+            :key="`aw-${idx}`"
+            class="tl-wave-ring"
+            :style="{ animationDelay: w.delay, animationDuration: w.duration }"
+          />
+        </div>
       </article>
       <article class="tl-kpi tl-kpi-tile danger">
         <div class="tl-kpi-head">
@@ -1563,6 +1659,20 @@ onBeforeUnmount(() => {
           <span class="tl-kpi-label">高风险涉华信息数</span>
         </div>
         <strong class="tl-kpi-num tl-kpi-num--red">{{ kpiDisplay.chinaHighRisk }}</strong>
+        <div class="tl-kpi-energy tl-kpi-energy--pulse" aria-hidden="true">
+          <span
+            v-for="(r, idx) in highRiskPulseLayers"
+            :key="`hr-${idx}`"
+            class="tl-red-pulse"
+            :style="{ animationDelay: r.delay, animationDuration: r.duration }"
+          />
+          <span
+            v-for="(p, idx) in highRiskParticles"
+            :key="`hp-${idx}`"
+            class="tl-particle tl-particle--red"
+            :style="{ left: p.left, top: p.top, width: p.size, height: p.size, opacity: p.opacity, animationDelay: p.delay, animationDuration: p.duration }"
+          />
+        </div>
       </article>
       <article class="tl-kpi tl-kpi-tile accent">
         <div class="tl-kpi-head">
@@ -1575,6 +1685,17 @@ onBeforeUnmount(() => {
           <span class="tl-kpi-label">平均可信度（100 − FakeScore）</span>
         </div>
         <strong class="tl-kpi-num tl-kpi-num--accent">{{ kpiDisplay.avgCredibility != null ? kpiDisplay.avgCredibility : '—' }}</strong>
+        <div class="tl-kpi-energy tl-kpi-energy--ring" aria-hidden="true">
+          <div class="tl-ring-track" />
+          <div class="tl-ring-progress" :style="{ '--ring-pct': `${credibilityRing.pct}%` }" />
+          <span
+            v-for="(d, idx) in credibilityRing.dots"
+            :key="`rd-${idx}`"
+            class="tl-ring-dot"
+            :class="{ on: d.active }"
+            :style="{ left: d.left, top: d.top, animationDelay: d.delay }"
+          />
+        </div>
       </article>
     </section>
 
@@ -1853,6 +1974,9 @@ onBeforeUnmount(() => {
 .tl-kpi-tile {
   position: relative;
   overflow: hidden;
+  display: grid;
+  grid-template-rows: auto auto minmax(62px, 1fr);
+  min-height: 132px;
 }
 
 .tl-kpi-tile::before {
@@ -1894,7 +2018,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .tl-kpi-ico {
@@ -1921,31 +2045,208 @@ onBeforeUnmount(() => {
 
 .tl-kpi-num {
   display: block;
-  font-size: 1.55rem;
-  font-weight: 700;
-  line-height: 1.15;
+  text-align: center;
+  margin: 2px 0 2px;
+  font-size: clamp(1.9rem, 1.6vw, 2.6rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: 0.03em;
   font-variant-numeric: tabular-nums;
 }
 
 .tl-kpi-num--cyan {
   color: #e0f2fe;
   text-shadow:
-    0 0 18px rgba(56, 189, 248, 0.55),
-    0 0 36px rgba(14, 165, 233, 0.28);
+    0 0 14px rgba(0, 224, 255, 0.7),
+    0 0 28px rgba(0, 224, 255, 0.4);
 }
 
 .tl-kpi-num--red {
   color: #fda4af;
   text-shadow:
-    0 0 18px rgba(244, 63, 94, 0.55),
-    0 0 32px rgba(220, 38, 38, 0.25);
+    0 0 14px rgba(255, 77, 79, 0.72),
+    0 0 30px rgba(255, 77, 79, 0.44);
 }
 
 .tl-kpi-num--accent {
   color: #67e8f9;
   text-shadow:
-    0 0 18px rgba(34, 211, 238, 0.5),
-    0 0 30px rgba(56, 189, 248, 0.22);
+    0 0 14px rgba(0, 224, 255, 0.7),
+    0 0 30px rgba(0, 224, 255, 0.45);
+}
+
+.tl-kpi-energy {
+  position: relative;
+  height: 64px;
+  margin-top: 2px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(8, 30, 54, 0.25), rgba(8, 22, 42, 0.05));
+}
+
+.tl-kpi-energy::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(0, 224, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 224, 255, 0.04) 1px, transparent 1px);
+  background-size: 14px 14px;
+  opacity: 0.55;
+}
+
+.tl-particle {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  animation-name: tl-particle-float, tl-particle-breathe;
+  animation-timing-function: linear, ease-in-out;
+  animation-iteration-count: infinite, infinite;
+}
+
+.tl-particle--blue {
+  background: #00e0ff;
+  box-shadow: 0 0 8px rgba(0, 224, 255, 0.75);
+}
+
+.tl-particle--red {
+  background: #ff4d4f;
+  box-shadow: 0 0 9px rgba(255, 77, 79, 0.85);
+}
+
+@keyframes tl-particle-float {
+  0% {
+    transform: translate(-50%, -50%) translateY(4px);
+  }
+  50% {
+    transform: translate(-50%, -50%) translateY(-4px);
+  }
+  100% {
+    transform: translate(-50%, -50%) translateY(4px);
+  }
+}
+
+@keyframes tl-particle-breathe {
+  0%,
+  100% {
+    filter: brightness(0.8);
+  }
+  50% {
+    filter: brightness(1.2);
+  }
+}
+
+.tl-kpi-energy--wave {
+  display: grid;
+  place-items: center;
+}
+
+.tl-wave-ring {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 224, 255, 0.8);
+  opacity: 0;
+  box-shadow: 0 0 14px rgba(0, 224, 255, 0.55);
+  animation: tl-wave-expand 2.2s ease-out infinite;
+}
+
+@keyframes tl-wave-expand {
+  0% {
+    transform: scale(0.15);
+    opacity: 0.82;
+  }
+  75% {
+    opacity: 0.35;
+  }
+  100% {
+    transform: scale(8.6);
+    opacity: 0;
+  }
+}
+
+.tl-kpi-energy--pulse {
+  background: linear-gradient(180deg, rgba(61, 13, 20, 0.28), rgba(31, 8, 12, 0.08));
+}
+
+.tl-red-pulse {
+  position: absolute;
+  inset: 8% 12%;
+  border-radius: 8px;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 77, 79, 0.28), rgba(255, 77, 79, 0));
+  animation: tl-alert-pulse 0.9s ease-in-out infinite;
+  mix-blend-mode: screen;
+}
+
+@keyframes tl-alert-pulse {
+  0%,
+  100% {
+    opacity: 0.16;
+  }
+  50% {
+    opacity: 0.54;
+  }
+}
+
+.tl-kpi-energy--ring {
+  display: grid;
+  place-items: center;
+}
+
+.tl-ring-track,
+.tl-ring-progress {
+  position: absolute;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+}
+
+.tl-ring-track {
+  border: 5px solid rgba(148, 163, 184, 0.24);
+}
+
+.tl-ring-progress {
+  background: conic-gradient(#00e0ff var(--ring-pct, 0%), rgba(148, 163, 184, 0.16) 0);
+  -webkit-mask: radial-gradient(circle, transparent 58%, #000 60%);
+  mask: radial-gradient(circle, transparent 58%, #000 60%);
+  filter: drop-shadow(0 0 10px rgba(0, 224, 255, 0.6));
+  animation: tl-ring-rotate 6.2s linear infinite;
+}
+
+@keyframes tl-ring-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tl-ring-dot {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(148, 163, 184, 0.4);
+}
+
+.tl-ring-dot.on {
+  background: #00e0ff;
+  box-shadow: 0 0 7px rgba(0, 224, 255, 0.75);
+  animation: tl-ring-dot-flow 1.6s ease-in-out infinite;
+}
+
+@keyframes tl-ring-dot-flow {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .tl-main {

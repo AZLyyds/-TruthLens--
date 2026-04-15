@@ -136,8 +136,19 @@ async function requestCompletion(messages, options = {}) {
 export async function extractFacts(text) {
   try {
     if (!text || !String(text).trim()) return toFailure('text 不能为空')
+    const normalizedText = String(text).replace(/\s+/g, ' ').trim()
+    const excerpt = normalizedText.slice(0, 9000)
     const prompt =
-      `你是一个事实抽取助手。请从下面新闻文本中抽取客观事实，输出严格 JSON 格式，不要多余解释：\n` +
+      `你是一个“新闻事实抽取器”。请只基于给定新闻正文抽取“可核验事实”，输出严格 JSON，不要多余解释。\n` +
+      `\n` +
+      `抽取规则（必须遵守）：\n` +
+      `1) 只保留原文中明确出现的信息，不得补充常识推断，不得编造机构名/数字/时间。\n` +
+      `2) 优先抽取可用于多源比对的事实：时间、主体、关键事件、信息来源（最多 8 条，最少 3 条；若正文信息不足可少于 3 条，但不得胡编）。\n` +
+      `3) 每条 event 必须具体，避免“进行了报道/表示关注”等空泛描述；尽量包含动作+对象或结果。\n` +
+      `4) 若原文未给出 time/source，请填空字符串 ""，不要写“未知/未提及”。\n` +
+      `5) 禁止输出与正文无关的泛化结论。\n` +
+      `\n` +
+      `输出格式（严格保持）：\n` +
       `{\n` +
       `  "facts": [\n` +
       `    {\n` +
@@ -148,7 +159,8 @@ export async function extractFacts(text) {
       `    }\n` +
       `  ]\n` +
       `}\n` +
-      `新闻内容：${text}`
+      `\n` +
+      `新闻内容：\n${excerpt}`
 
     const completion = await requestCompletion([{ role: 'user', content: prompt }])
     if (!completion.success) return completion
@@ -357,6 +369,90 @@ export async function generateDetailedSingleReport(payload) {
   }
 }
 
+function normalizeStructuredMultiDeepAnalysis(parsed) {
+  const obj = parsed && typeof parsed === 'object' ? parsed : {}
+  const pickArr = (value, fallback = []) =>
+    (Array.isArray(value) ? value : fallback)
+      .map((x) => String(x || '').trim())
+      .filter(Boolean)
+      .slice(0, 10)
+
+  const coreFacts = pickArr(obj.coreFacts)
+  const factDifferences = pickArr(obj.factDifferences)
+  const missingInfo = pickArr(obj.missingInfo)
+  const actionSuggestions = pickArr(obj.actionSuggestions)
+  const verificationConclusion = String(obj.verificationConclusion || '').trim()
+
+  return {
+    coreFacts: coreFacts.length ? coreFacts : ['当前输入中尚未形成可稳定交叉印证的一致事实，请结合原文段落继续核对'],
+    factDifferences: factDifferences.length ? factDifferences : ['当前未识别到可稳定复现的逐条事实分歧'],
+    missingInfo: missingInfo.length ? missingInfo : ['当前输入未暴露明确的信息缺口'],
+    actionSuggestions: actionSuggestions.length ? actionSuggestions : ['建议回查原文关键信息并补充可追溯来源后再传播'],
+    verificationConclusion: verificationConclusion || '基于现有输入，建议继续按分歧点与缺失项做针对性核查后再下结论。',
+  }
+}
+
+export async function generateStructuredMultiDeepAnalysis(payload) {
+  try {
+    const sourceBriefs = Array.isArray(payload?.sourceBriefs) ? payload.sourceBriefs.slice(0, 8) : []
+    const perItemFacts = Array.isArray(payload?.perItemFacts) ? payload.perItemFacts.slice(0, 8) : []
+    const conflicts = Array.isArray(payload?.conflicts) ? payload.conflicts.slice(0, 10) : []
+    const consistencyScore = Number(payload?.consistencyScore)
+
+    const factsText = perItemFacts
+      .map((group, idx) => {
+        const rows = Array.isArray(group) ? group : []
+        const rowText = rows.length
+          ? rows
+              .map((f) => {
+                const line = [f?.time, f?.subject, f?.event, f?.source].filter(Boolean).join(' / ')
+                return line || '（该条事实字段较短）'
+              })
+              .join('；')
+          : '（无可用结构化事实）'
+        return `第${idx + 1}篇事实：${rowText}`
+      })
+      .join('\n')
+
+    const prompt =
+      `你是“多源新闻结构化核查助手”。请仅依据输入内容，输出 deepAnalysis JSON。\n` +
+      `严禁编造未出现的信息，严禁输出 markdown。\n` +
+      `\n` +
+      `输出 JSON 结构（字段名必须一致）：\n` +
+      `{\n` +
+      `  "coreFacts": ["..."],\n` +
+      `  "factDifferences": ["..."],\n` +
+      `  "missingInfo": ["..."],\n` +
+      `  "actionSuggestions": ["..."],\n` +
+      `  "verificationConclusion": "..."\n` +
+      `}\n` +
+      `\n` +
+      `生成规则（必须遵守）：\n` +
+      `1) coreFacts 至少 1 条，优先提炼“双方都提到/都承认/都围绕”的共同命题；允许写“叙事接近但措辞不同”，不要机械输出“尚未提炼出稳定一致事实”。\n` +
+      `2) missingInfo 仅在输入确实缺失时填写。若来源片段或事实中出现“据/来源/记者/通报/公告/官网/官方/媒体名”等线索，不得写“未明确消息来源”。\n` +
+      `3) factDifferences 要具体到主体/时间/动作/口径差异，不要只写抽象分数句。\n` +
+      `4) actionSuggestions 必须逐条对应已识别分歧或缺失，避免泛化空话。\n` +
+      `5) verificationConclusion 控制在 1-2 句，客观中性。\n` +
+      `\n` +
+      `输入：\n` +
+      `一致性分数：${Number.isFinite(consistencyScore) ? consistencyScore : '（无）'}\n` +
+      `来源片段：${sourceBriefs.length ? sourceBriefs.join('；') : '（无）'}\n` +
+      `局部冲突：${conflicts.length ? conflicts.join('；') : '（无）'}\n` +
+      `结构化事实：\n${factsText || '（无）'}`
+
+    const completion = await requestCompletion([{ role: 'user', content: prompt }], {
+      timeout: REQUEST_TIMEOUT_REPORT,
+      maxTokens: 2200,
+    })
+    if (!completion.success) return completion
+    const parsed = parseStrictJson(completion.data, null)
+    if (!parsed || typeof parsed !== 'object') return toFailure('deepAnalysis JSON 解析失败')
+    return toSuccess(normalizeStructuredMultiDeepAnalysis(parsed))
+  } catch (error) {
+    return toFailure(error?.message || 'generateStructuredMultiDeepAnalysis 执行失败')
+  }
+}
+
 export async function generateDetailedMultiReport(payload) {
   try {
     const coreFacts = Array.isArray(payload?.coreFacts) ? payload.coreFacts.slice(0, 12) : []
@@ -364,6 +460,7 @@ export async function generateDetailedMultiReport(payload) {
     const missingInfo = Array.isArray(payload?.missingInfo) ? payload.missingInfo.slice(0, 10) : []
     const verificationConclusion = String(payload?.verificationConclusion || '').trim()
     const actionSuggestions = Array.isArray(payload?.actionSuggestions) ? payload.actionSuggestions.slice(0, 10) : []
+    const sourceBriefs = Array.isArray(payload?.sourceBriefs) ? payload.sourceBriefs.slice(0, 8) : []
 
     const normalizeMarkdown = (raw) =>
       String(raw || '')
@@ -393,8 +490,10 @@ export async function generateDetailedMultiReport(payload) {
       `   ## 传播风险与对外表述建议\n` +
       `3) **每个 ## 下**须含：至少 **1 个** ### 子论点；至少 **3 条**「-」列表，每条不少于 25 字，并说明对应输入中的哪类分歧/缺失/结论。\n` +
       `4) 必须**具体展开至少 3 条**事实分歧（可引用输入原文要点改写），并**至少 2 处**讨论信息缺失项；须写清可落地的核查路径，不得只谈「权威性」或空洞评分。\n` +
-      `5) 禁止编造输入中没有的信息。\n\n` +
+      `5) 必须优先引用“来源片段摘录”中的措辞来写，不得写与这些片段语义无关的情节；若片段不足，需明确标注“输入未提供”。\n` +
+      `6) 禁止编造输入中没有的信息。\n\n` +
       `输入：\n` +
+      `来源片段摘录：${sourceBriefs.length ? sourceBriefs.join('；') : '（无）'}\n` +
       `核心事实一致点：${coreFacts.length ? coreFacts.join('；') : '（无）'}\n` +
       `事实分歧点：${factDifferences.length ? factDifferences.join('；') : '（无）'}\n` +
       `信息缺失项：${missingInfo.length ? missingInfo.join('；') : '（无）'}\n` +

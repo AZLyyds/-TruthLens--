@@ -15,6 +15,7 @@ import {
   extractFacts,
   extractNewsTitleAndSummary,
   generateDetailedMultiReport,
+  generateStructuredMultiDeepAnalysis,
   generateDetailedSingleReport,
   summarize,
 } from '../../src/backend/services/aiService.js'
@@ -409,6 +410,7 @@ function buildMultiCompareResult(items, factsGroup) {
   const pairScores = []
   const conflicts = []
   const sharedFacts = []
+  const weakSharedFacts = []
   const diffLines = []
   const missingInfo = new Set()
 
@@ -424,7 +426,6 @@ function buildMultiCompareResult(items, factsGroup) {
 
       let matched = 0
       const usedRight = new Set()
-      const threshold = 0.36
       left.forEach((leftItem) => {
         let bestIndex = -1
         let bestScore = 0
@@ -476,6 +477,10 @@ function buildMultiCompareResult(items, factsGroup) {
         const briefR = [best.subject, best.event].filter(Boolean).join(' / ')
         if (bestScore >= 0.72) {
           sharedFacts.push(`第${i + 1}篇与第${j + 1}篇均提到：${briefL || briefR || '同一核心事件'}`)
+        } else if (bestScore >= 0.52) {
+          weakSharedFacts.push(
+            `第${i + 1}篇与第${j + 1}篇叙事接近：${briefL || '（左侧表述较短）'} vs ${briefR || '（右侧表述较短）'}`,
+          )
         }
 
         if (l.score && best.score && l.score !== best.score) {
@@ -502,6 +507,8 @@ function buildMultiCompareResult(items, factsGroup) {
     const m = text.match(/(\d{1,2})月(\d{1,2})[日号]?/)
     return m ? `${m[1]}月${m[2]}日` : ''
   }
+  const hasSourceCue = (text) =>
+    /(据|来源|记者|通报|公告|披露|发布|新华社|央视|人民日报|人民网|路透|美联社|官网|官方)/.test(String(text || ''))
   for (let i = 0; i < rawTexts.length; i += 1) {
     for (let j = i + 1; j < rawTexts.length; j += 1) {
       const p1 = extractPercent(rawTexts[i])
@@ -529,13 +536,21 @@ function buildMultiCompareResult(items, factsGroup) {
       if (String(f?.source || '').trim()) hasSource = true
     })
     if (!hasTime) missingInfo.add(`第${idx + 1}篇未明确关键事件时间点`)
-    if (!hasSource) missingInfo.add(`第${idx + 1}篇未明确消息来源`)
+    const item = Array.isArray(items) ? items[idx] : null
+    const hasInputUrl = !!String(item?.url || '').trim()
+    const hasNewsId = !!item?.newsId
+    const sourceHintInRawText = hasSourceCue(rawTexts[idx] || '')
+    if (!hasSource && !hasInputUrl && !hasNewsId && !sourceHintInRawText) {
+      missingInfo.add(`第${idx + 1}篇未明确消息来源`)
+    }
   })
 
   const consistencyScore =
     pairScores.length === 0 ? 0 : Number(((pairScores.reduce((sum, n) => sum + n, 0) / pairScores.length) * 100).toFixed(2))
 
-  const coreFacts = [...new Set(sharedFacts)].slice(0, 5)
+  const strongCoreFacts = [...new Set(sharedFacts)]
+  const relaxedCoreFacts = [...new Set(weakSharedFacts)]
+  const coreFacts = (strongCoreFacts.length ? strongCoreFacts : relaxedCoreFacts).slice(0, 5)
   const factDifferences = [...new Set(diffLines.length ? diffLines : conflicts)].slice(0, 6)
   const missingList = [...missingInfo].slice(0, 5)
   const verificationConclusion =
@@ -1798,8 +1813,26 @@ app.post('/api/v1/analysis/multi', async (req, res) => {
 
   const factsGroup = factsResults.map((r) => r.data.facts)
   const output = buildMultiCompareResult(items, factsGroup)
+  const sourceBriefs = bundles.map((b, i) => {
+    const title = String(b.inputTitle || `来源${i + 1}`).replace(/\s+/g, ' ').trim()
+    const body = String(b.inputContent || b.resolved?.text || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 220)
+    return `第${i + 1}篇《${title}》：${body || '（正文为空）'}`
+  })
+  const aiDeep = await generateStructuredMultiDeepAnalysis({
+    sourceBriefs,
+    perItemFacts: output.perItemFacts,
+    conflicts: output.conflicts,
+    consistencyScore: output.consistencyScore,
+  })
+  if (aiDeep.success && aiDeep.data && typeof aiDeep.data === 'object') {
+    output.deepAnalysis = aiDeep.data
+  }
   const deep = output.deepAnalysis || {}
   const detailedMulti = await generateDetailedMultiReport({
+    sourceBriefs,
     coreFacts: deep.coreFacts,
     factDifferences: deep.factDifferences,
     missingInfo: deep.missingInfo,

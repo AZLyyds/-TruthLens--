@@ -18,8 +18,158 @@ const MULTI_CACHE_KEY = 'truthlens_multi_analysis_cache_v2'
 
 const isUrlInput = (value) => /^https?:\/\//i.test(String(value || '').trim())
 const hasEnoughInputs = computed(() => inputItems.value.filter((v) => String(v || '').trim()).length >= 2)
+
+const OLD_GENERIC_CORE = '尚未提炼出稳定的一致事实'
+const OLD_GENERIC_DIFF = '当前未识别到明确的逐条事实冲突'
+const OLD_GENERIC_MISSING = '未明确消息来源'
+const OLD_GENERIC_RECOMMEND = '一致性偏低，建议人工复核'
+
+const toCleanText = (value) => String(value || '').trim()
+const safeParseJson = (value, fallback = null) => {
+  if (typeof value !== 'string') return fallback
+  try {
+    return JSON.parse(value)
+  } catch {
+    return fallback
+  }
+}
+const unwrapPlaintext = (value) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (Array.isArray(value.plaintext)) return value.plaintext
+    if (typeof value.plaintext === 'string') return value.plaintext
+  }
+  return value
+}
+const normalizeMaybeArray = (value) => {
+  const unwrapped = unwrapPlaintext(value)
+  if (Array.isArray(unwrapped)) return unwrapped
+  if (typeof unwrapped === 'string') {
+    const parsed = safeParseJson(unwrapped, null)
+    if (Array.isArray(parsed)) return parsed
+  }
+  return []
+}
+const normalizeMaybeObject = (value) => {
+  const unwrapped = unwrapPlaintext(value)
+  if (unwrapped && typeof unwrapped === 'object' && !Array.isArray(unwrapped)) return unwrapped
+  if (typeof unwrapped === 'string') {
+    const parsed = safeParseJson(unwrapped, null)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+  }
+  return {}
+}
+const normalizeMaybeNumber = (value) => {
+  const unwrapped = unwrapPlaintext(value)
+  const n = Number(unwrapped)
+  return Number.isFinite(n) ? n : null
+}
+const toTextArray = (value) =>
+  normalizeMaybeArray(value)
+    .map((x) => toCleanText(x))
+    .filter(Boolean)
+
+const normalizePerItemFacts = (value) =>
+  normalizeMaybeArray(value).map((group) =>
+    normalizeMaybeArray(group)
+      .map((f) => ({
+        time: toCleanText(f?.time),
+        subject: toCleanText(f?.subject),
+        event: toCleanText(f?.event),
+        source: toCleanText(f?.source),
+      }))
+      .filter((f) => f.time || f.subject || f.event || f.source),
+  )
+
+function deriveCoreFactsFromPerItem(perItemFacts, conflicts) {
+  const subjectCount = new Map()
+  perItemFacts.forEach((group) => {
+    const seen = new Set()
+    group.forEach((f) => {
+      if (!f.subject) return
+      seen.add(f.subject)
+    })
+    seen.forEach((s) => subjectCount.set(s, (subjectCount.get(s) || 0) + 1))
+  })
+  const sharedSubjects = [...subjectCount.entries()]
+    .filter(([, c]) => c >= 2)
+    .map(([s]) => s)
+    .slice(0, 2)
+  if (sharedSubjects.length) {
+    return [`多篇文本均围绕 ${sharedSubjects.join('、')} 展开叙事，但细节口径仍需结合原文逐段核对。`]
+  }
+  if (conflicts.length) {
+    return ['多篇文本均指向同一议题，但核心事实表述存在差异，建议以原文段落对读为准。']
+  }
+  return ['请结合每篇原文中的时间、主体和动作句继续交叉核验，以形成稳定一致事实。']
+}
+
+function normalizeMultiOutput(raw) {
+  const base = raw && typeof raw === 'object' ? raw : {}
+  const nested = normalizeMaybeObject(base.output)
+  const o = Object.keys(nested).length ? nested : base
+  const deep = normalizeMaybeObject(o.deepAnalysis)
+  const perItemFacts = normalizePerItemFacts(o.perItemFacts)
+
+  const scoreNum = normalizeMaybeNumber(o.consistencyScore ?? o.consistency_score)
+  const consistencyScore = scoreNum != null ? Math.max(0, Math.min(100, scoreNum)) : null
+
+  let conflicts = toTextArray(o.conflicts)
+  let coreFacts = toTextArray(deep.coreFacts).filter((x) => !x.includes(OLD_GENERIC_CORE))
+  let factDifferences = toTextArray(deep.factDifferences).filter((x) => !x.includes(OLD_GENERIC_DIFF))
+  let missingInfo = toTextArray(deep.missingInfo)
+  let actionSuggestions = toTextArray(deep.actionSuggestions)
+  let verificationConclusion = toCleanText(unwrapPlaintext(deep.verificationConclusion))
+  let recommendation = toCleanText(unwrapPlaintext(o.recommendation))
+  let sourceAuthorityDiff = toCleanText(unwrapPlaintext(o.sourceAuthorityDiff ?? o.source_authority_diff))
+
+  // 使用新口径：差异项优先来自 deepAnalysis；无则回退 conflicts
+  if (!factDifferences.length && conflicts.length) factDifferences = conflicts.slice(0, 6)
+  if (!conflicts.length && factDifferences.length) conflicts = factDifferences.slice(0, 6)
+
+  // 避免旧兜底“未明确消息来源”误导：当存在来源字段或来源差异描述时，去掉该旧句
+  const hasAnyFactSource = perItemFacts.some((group) => group.some((f) => f.source))
+  if (hasAnyFactSource || sourceAuthorityDiff) {
+    missingInfo = missingInfo.filter((x) => !x.includes(OLD_GENERIC_MISSING))
+  }
+
+  if (!coreFacts.length) coreFacts = deriveCoreFactsFromPerItem(perItemFacts, conflicts)
+  if (!factDifferences.length) factDifferences = ['当前未识别到可稳定复现的逐条事实分歧，请结合原文段落继续核对。']
+  if (!missingInfo.length) missingInfo = ['当前输入未暴露明确的信息缺口。']
+  if (!verificationConclusion) verificationConclusion = recommendation || '基于现有输入，建议继续围绕分歧点做针对性事实核查。'
+  if (!recommendation || recommendation === OLD_GENERIC_RECOMMEND) recommendation = verificationConclusion
+  if (!sourceAuthorityDiff) sourceAuthorityDiff = '来源权威性需结合原始发布主体与可追溯链路综合评估。'
+  // 若缺失项已明确“无明显缺口”，移除与之冲突的旧建议文案，避免界面自相矛盾
+  const missingSaysNoGap = missingInfo.some((x) => x.includes('未暴露明确的信息缺口'))
+  if (missingSaysNoGap) {
+    actionSuggestions = actionSuggestions.filter((x) => !/补齐缺失信息|未明确消息来源/.test(x))
+  }
+  if (!actionSuggestions.length) {
+    actionSuggestions = [
+      `优先核查分歧点：${factDifferences[0]}`,
+      `结合来源信息复核：${sourceAuthorityDiff}`,
+      '回看原文发布时间、原始引述与上下文段落，避免二手转述造成语义偏移',
+    ]
+  }
+
+  return {
+    ...o,
+    consistencyScore,
+    conflicts,
+    recommendation,
+    sourceAuthorityDiff,
+    perItemFacts,
+    deepAnalysis: {
+      coreFacts: coreFacts.slice(0, 8),
+      factDifferences: factDifferences.slice(0, 10),
+      missingInfo: missingInfo.slice(0, 8),
+      actionSuggestions: actionSuggestions.slice(0, 10),
+      verificationConclusion,
+    },
+  }
+}
+
 const multiSummaryDisplay = computed(() => {
-  const o = output.value
+  const o = normalizeMultiOutput(output.value)
   if (!o) return ''
   const deep = o.deepAnalysis || {}
   const raw = String(o.detailedReport || '').trim()
@@ -39,22 +189,22 @@ const multiSummaryDisplay = computed(() => {
 const multiSummaryHtml = computed(() => renderAiMarkdown(multiSummaryDisplay.value))
 
 const deepCoreFacts = computed(() => {
-  const rows = output.value?.deepAnalysis?.coreFacts
-  return Array.isArray(rows) && rows.length ? rows : ['暂无稳定一致事实']
+  const rows = normalizeMultiOutput(output.value)?.deepAnalysis?.coreFacts
+  return Array.isArray(rows) && rows.length ? rows : ['请继续补充可核验段落后重试。']
 })
 const deepDifferences = computed(() => {
-  const rows = output.value?.deepAnalysis?.factDifferences
-  return Array.isArray(rows) && rows.length ? rows : ['暂无明确分歧点']
+  const rows = normalizeMultiOutput(output.value)?.deepAnalysis?.factDifferences
+  return Array.isArray(rows) && rows.length ? rows : ['当前未识别到可稳定复现的逐条事实分歧。']
 })
 const deepMissing = computed(() => {
-  const rows = output.value?.deepAnalysis?.missingInfo
-  return Array.isArray(rows) && rows.length ? rows : ['暂无明显缺失项']
+  const rows = normalizeMultiOutput(output.value)?.deepAnalysis?.missingInfo
+  return Array.isArray(rows) && rows.length ? rows : ['当前输入未暴露明确的信息缺口。']
 })
 const deepConclusion = computed(() =>
-  String(output.value?.deepAnalysis?.verificationConclusion || output.value?.recommendation || '暂无核查结论'),
+  String(normalizeMultiOutput(output.value)?.deepAnalysis?.verificationConclusion || '请继续核查后形成结论。'),
 )
 const deepActions = computed(() => {
-  const rows = output.value?.deepAnalysis?.actionSuggestions
+  const rows = normalizeMultiOutput(output.value)?.deepAnalysis?.actionSuggestions
   return Array.isArray(rows) && rows.length ? rows : ['建议回查原文并补齐关键细节后再传播']
 })
 
@@ -81,11 +231,11 @@ function deriveRadarScores(o) {
   return [timeline, subject, data, conclusion]
 }
 
-const radarTarget = computed(() => deriveRadarScores(output.value))
+const radarTarget = computed(() => deriveRadarScores(normalizeMultiOutput(output.value)))
 
 /** 建议动作：由接口字段组合，信息密度高 */
 const actionCards = computed(() => {
-  const o = output.value
+  const o = normalizeMultiOutput(output.value)
   if (!o) return []
   const cards = []
   const score = o.consistencyScore
@@ -143,7 +293,7 @@ const actionCards = computed(() => {
 })
 
 const consistencyBarTone = computed(() => {
-  const v = output.value?.consistencyScore
+  const v = normalizeMultiOutput(output.value)?.consistencyScore
   if (v == null) return 'mid'
   if (v <= 30) return 'low'
   if (v <= 60) return 'mid'
@@ -151,7 +301,7 @@ const consistencyBarTone = computed(() => {
 })
 
 const conclusionTone = computed(() => {
-  const v = output.value?.consistencyScore
+  const v = normalizeMultiOutput(output.value)?.consistencyScore
   if (v == null) return 'neutral'
   if (v < 40) return 'bad'
   if (v < 70) return 'warn'
@@ -159,13 +309,13 @@ const conclusionTone = computed(() => {
 })
 
 const authorityStars = computed(() => {
-  const v = output.value?.consistencyScore
+  const v = normalizeMultiOutput(output.value)?.consistencyScore
   if (v == null) return 3
   return Math.max(1, Math.min(5, Math.round(v / 20)))
 })
 
 const authorityBarPct = computed(() => {
-  const v = output.value?.consistencyScore
+  const v = normalizeMultiOutput(output.value)?.consistencyScore
   if (v == null) return 50
   return Math.max(0, Math.min(100, v))
 })
@@ -215,7 +365,7 @@ watch(
       animatedRadar.value = [0, 0, 0, 0]
       return
     }
-    const t = deriveRadarScores(next)
+    const t = deriveRadarScores(normalizeMultiOutput(next))
     runRadarAnimation(t)
   },
 )
@@ -226,12 +376,12 @@ onMounted(() => {
     if (raw) {
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed?.inputItems)) inputItems.value = parsed.inputItems.map((x) => String(x || ''))
-      if (parsed?.output && typeof parsed.output === 'object') output.value = parsed.output
+      if (parsed?.output && typeof parsed.output === 'object') output.value = normalizeMultiOutput(parsed.output)
     }
   } catch {
     /* ignore cache */
   }
-  if (output.value) runRadarAnimation(deriveRadarScores(output.value))
+  if (output.value) runRadarAnimation(deriveRadarScores(normalizeMultiOutput(output.value)))
 })
 
 watch(
@@ -254,7 +404,7 @@ watch(
 
 const onExport = async () => {
   if (!output.value) return
-  const o = output.value
+  const o = normalizeMultiOutput(output.value)
   const escapeHtml = (value) =>
     String(value || '')
       .replace(/&/g, '&amp;')
@@ -269,7 +419,7 @@ const onExport = async () => {
       body: [
         ...(Array.isArray(o?.deepAnalysis?.coreFacts) && o.deepAnalysis.coreFacts.length
           ? o.deepAnalysis.coreFacts
-          : ['暂无稳定一致事实']),
+          : ['请继续补充可核验段落后重试。']),
       ],
     },
     {
@@ -277,14 +427,14 @@ const onExport = async () => {
       body:
         Array.isArray(o?.deepAnalysis?.factDifferences) && o.deepAnalysis.factDifferences.length
           ? o.deepAnalysis.factDifferences
-          : ['暂无明确分歧点'],
+          : ['当前未识别到可稳定复现的逐条事实分歧。'],
     },
     {
       title: '信息缺失项',
       body:
         Array.isArray(o?.deepAnalysis?.missingInfo) && o.deepAnalysis.missingInfo.length
           ? o.deepAnalysis.missingInfo
-          : ['暂无明显缺失项'],
+          : ['当前输入未暴露明确的信息缺口。'],
     },
     {
       title: '核查结论',
@@ -410,6 +560,7 @@ const runCompare = async () => {
     output.value = await analyzeMulti({
       items,
     })
+    output.value = normalizeMultiOutput(output.value)
   } catch (error) {
     errorMessage.value = error?.message || '一致性分析失败，请稍后重试'
   } finally {
