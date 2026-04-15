@@ -1796,6 +1796,7 @@ onBeforeUnmount(() => {
   position: relative;
   isolation: isolate;
   height: 100vh;
+  min-height: 100vh;
   box-sizing: border-box;
   width: 100%;
   max-width: none;
@@ -2077,11 +2078,14 @@ onBeforeUnmount(() => {
 
 .tl-kpi-energy {
   position: relative;
-  height: 64px;
+  height: 66px;
   margin-top: 2px;
   border-radius: 8px;
   overflow: hidden;
-  background: linear-gradient(180deg, rgba(8, 30, 54, 0.25), rgba(8, 22, 42, 0.05));
+  isolation: isolate;
+  background: radial-gradient(120% 78% at 50% 52%, rgba(12, 42, 68, 0.3), rgba(8, 22, 42, 0.08) 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 14%, #000 86%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 14%, #000 86%, transparent 100%);
 }
 
 .tl-kpi-energy::before {
@@ -2093,7 +2097,7 @@ onBeforeUnmount(() => {
     linear-gradient(rgba(0, 224, 255, 0.06) 1px, transparent 1px),
     linear-gradient(90deg, rgba(0, 224, 255, 0.04) 1px, transparent 1px);
   background-size: 14px 14px;
-  opacity: 0.55;
+  opacity: 0.36;
 }
 
 .tl-particle {
@@ -2173,9 +2177,14 @@ onBeforeUnmount(() => {
 
 .tl-red-pulse {
   position: absolute;
-  inset: 8% 12%;
-  border-radius: 8px;
-  background: radial-gradient(circle at 50% 50%, rgba(255, 77, 79, 0.28), rgba(255, 77, 79, 0));
+  left: 50%;
+  top: 50%;
+  width: 64%;
+  aspect-ratio: 1 / 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 77, 79, 0.34), rgba(255, 77, 79, 0.05) 42%, rgba(255, 77, 79, 0) 72%);
+  filter: blur(0.5px);
   animation: tl-alert-pulse 0.9s ease-in-out infinite;
   mix-blend-mode: screen;
 }

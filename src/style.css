@@ -1754,7 +1754,11 @@ button.history-detail__collapse {
 }
 
 @media (max-width: 1280px) {
-  .dashboard-page { height: auto; min-height: calc(100dvh - 64px); overflow: auto; }
+  .dashboard-page {
+    height: auto;
+    min-height: calc(100dvh - 64px);
+    overflow: auto;
+  }
   .dashboard-grid {
     grid-template-columns: 1fr 1fr;
     grid-template-rows: auto auto auto;
