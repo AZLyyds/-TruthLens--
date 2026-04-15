@@ -5,11 +5,12 @@ import TruthLensTopNav from './components/layout/TruthLensTopNav.vue'
 
 const route = useRoute()
 const showTopNav = computed(() => route.path !== '/login')
+const isDashboardRoute = computed(() => route.path === '/dashboard')
 </script>
 
 <template>
   <TruthLensTopNav v-if="showTopNav" />
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'app-shell--dashboard': isDashboardRoute }">
     <router-view />
   </div>
 </template>
@@ -45,5 +46,10 @@ body {
 .app-shell {
   padding-left: clamp(20px, 5.5vw, 56px);
   padding-right: clamp(20px, 5.5vw, 56px);
+}
+
+.app-shell.app-shell--dashboard {
+  padding-left: 0;
+  padding-right: 0;
 }
 </style>

@@ -12,6 +12,8 @@ const props = defineProps<{
   selected?: string
   // 视觉大小上限：避免太挤导致渲染耗时
   maxWords?: number
+  /** 监控大屏深色科技风：青红渐变发光、深色底 */
+  variant?: 'default' | 'dashboard'
 }>()
 
 const emit = defineEmits<{
@@ -53,8 +55,20 @@ const fontFamily =
 
 const PALETTE = ['#b91c1c', '#b45309', '#15803d', '#9a3412', '#166534', '#7f1d1d']
 
+const isDashboard = computed(() => props.variant === 'dashboard')
+
 const wordColor = (text: string, size: number) => {
   const selected = props.selected && props.selected === text
+  if (isDashboard.value) {
+    if (selected) return '#fb7185'
+    const s = Math.max(12, Math.min(48, size))
+    const t = (s - 12) / (48 - 12)
+    if (t > 0.72) return '#22d3ee'
+    if (t > 0.42) return '#38bdf8'
+    if (/china|中国|涉华|对华/i.test(text)) return '#f87171'
+    const h = hashString(text) % 360
+    return `hsl(${h}, 78%, ${52 + t * 12}%)`
+  }
   if (selected) return '#b91c1c'
   const s = Math.max(12, Math.min(42, size))
   // 高频偏红，中频偏橙，低频偏绿，整体低饱和
@@ -77,7 +91,17 @@ const wordColor = (text: string, size: number) => {
 
 const selectedWord = computed(() => props.selected || '')
 
-const fontSizeFor = (size: number) => Math.max(12, Math.min(42, size + 1))
+const fontSizeFor = (size: number) => {
+  const max = isDashboard.value ? 48 : 42
+  return Math.max(12, Math.min(max, size + 1))
+}
+
+const hoveredText = ref('')
+
+const textTransform = (w: LayoutWord) => {
+  const scale = hoveredText.value === w.text ? 1.12 : 1
+  return `translate(${w.x}, ${w.y}) rotate(${w.rotate}) scale(${scale})`
+}
 
 const wordOpacityFor = (size: number) => {
   // 让小词更淡，提升艺术感与层次
@@ -148,8 +172,8 @@ const buildLayout = () => {
     .font(fontFamily)
     .fontSize((d: any) => {
       const s = Number(d.size || 12)
-      // 控制字体大小范围
-      return Math.max(12, Math.min(42, s + 1))
+      const max = props.variant === 'dashboard' ? 48 : 42
+      return Math.max(12, Math.min(max, s + 1))
     })
     .spiral('archimedean')
     .on('end', (out: any[]) => {
@@ -220,7 +244,13 @@ const ariaLabel = computed(() => {
 </script>
 
 <template>
-  <div ref="containerRef" class="cds-wordcloud" role="img" :aria-label="ariaLabel">
+  <div
+    ref="containerRef"
+    class="cds-wordcloud"
+    :class="{ 'cds-wordcloud--dashboard': isDashboard }"
+    role="img"
+    :aria-label="ariaLabel"
+  >
     <svg
       v-if="layoutWords.length"
       :width="'100%'"
@@ -235,17 +265,37 @@ const ariaLabel = computed(() => {
           <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#0f172a" flood-opacity="0.2" />
           <feDropShadow dx="0" dy="0" stdDeviation="0.5" flood-color="#ffffff" flood-opacity="0.35" />
         </filter>
+        <filter id="tl-wc-glow-dash" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="1.2" result="blur" />
+          <feFlood flood-color="#22d3ee" flood-opacity="0.55" result="glow" />
+          <feComposite in="glow" in2="blur" operator="in" result="colored" />
+          <feMerge>
+            <feMergeNode in="colored" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
         <linearGradient id="tl-wc-bg" x1="0%" y1="0%" x2="100%" y2="100%">
           <stop offset="0%" stop-color="rgba(254, 242, 242, 0.5)" />
           <stop offset="100%" stop-color="rgba(255, 255, 255, 0.2)" />
         </linearGradient>
+        <linearGradient id="tl-wc-bg-dash" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="rgba(15, 23, 42, 0.92)" />
+          <stop offset="100%" stop-color="rgba(8, 47, 73, 0.75)" />
+        </linearGradient>
       </defs>
-      <rect :width="svgW" :height="svgH" x="0" y="0" fill="url(#tl-wc-bg)" opacity="0.9" />
+      <rect
+        :width="svgW"
+        :height="svgH"
+        x="0"
+        y="0"
+        :fill="isDashboard ? 'url(#tl-wc-bg-dash)' : 'url(#tl-wc-bg)'"
+        :opacity="isDashboard ? 1 : 0.9"
+      />
       <g :transform="`translate(${svgW / 2}, ${svgH / 2})`">
         <text
           v-for="w in layoutWords"
           :key="w.text"
-          :transform="`translate(${w.x}, ${w.y}) rotate(${w.rotate})`"
+          :transform="textTransform(w)"
           :text-anchor="'middle'"
           :dominant-baseline="'middle'"
           :fill="wordColor(w.text, w.size)"
@@ -253,12 +303,22 @@ const ariaLabel = computed(() => {
           :font-size="fontSizeFor(w.size)"
           :font-weight="fontWeightFor(w.size)"
           :opacity="wordOpacityFor(w.size)"
-          :stroke="w.text === selectedWord ? 'rgba(248,113,113,0.95)' : 'rgba(255,255,255,0.85)'"
+          :stroke="
+            isDashboard
+              ? w.text === selectedWord
+                ? 'rgba(251,113,133,0.9)'
+                : 'rgba(56,189,248,0.35)'
+              : w.text === selectedWord
+                ? 'rgba(248,113,113,0.95)'
+                : 'rgba(255,255,255,0.85)'
+          "
           :stroke-width="strokeWidthFor(w.size)"
           paint-order="stroke fill"
-          filter="url(#tl-wc-shadow)"
-          :style="{ cursor: 'pointer', userSelect: 'none' }"
+          :filter="isDashboard ? 'url(#tl-wc-glow-dash)' : 'url(#tl-wc-shadow)'"
+          :style="{ cursor: 'pointer', userSelect: 'none', transition: 'transform 0.2s ease' }"
           @click="onSelect(w.text)"
+          @mouseenter="hoveredText = w.text"
+          @mouseleave="hoveredText = ''"
         >
           {{ w.text }}
         </text>
@@ -280,6 +340,10 @@ const ariaLabel = computed(() => {
   width: 100%;
   height: 100%;
   background: transparent;
+}
+
+.cds-wordcloud--dashboard.cds-wordcloud {
+  border-radius: 10px;
 }
 </style>
 

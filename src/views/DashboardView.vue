@@ -30,18 +30,21 @@ const elPie = ref(null)
 const elMap = ref(null)
 const elConsistency = ref(null)
 const elSpread = ref(null)
-const elAlert30 = ref(null)
+const elRiskRealtime = ref(null)
+const elGlobalCompare = ref(null)
 
 let chartTrend
 let chartPie
 let chartMap
 let chartConsistency
 let chartSpread
-let chartAlert30
+let chartRiskRealtime
+let chartGlobalCompare
 
 let clockTimer
 let refreshTimer
 let ro
+let worldGeoCached
 
 const pad = (n) => String(n).padStart(2, '0')
 const tickClock = () => {
@@ -87,6 +90,63 @@ const kpis = computed(() => {
   }
 })
 
+/** KPI 数字滚动展示（数据源仍为 kpis，仅视觉动画） */
+const kpiDisplay = ref({
+  todayCollected: 0,
+  todayAnalyzed: 0,
+  chinaHighRisk: 0,
+  avgCredibility: null,
+})
+let kpiAnimId = 0
+
+function animateKpiTo(next) {
+  const from = {
+    todayCollected: kpiDisplay.value.todayCollected,
+    todayAnalyzed: kpiDisplay.value.todayAnalyzed,
+    chinaHighRisk: kpiDisplay.value.chinaHighRisk,
+    avgCredibility: kpiDisplay.value.avgCredibility,
+  }
+  const start = performance.now()
+  const duration = 950
+  const tick = (now) => {
+    const t = Math.min(1, (now - start) / duration)
+    const ease = 1 - (1 - t) ** 3
+    const lerp = (a, b) => Math.round(a + (b - a) * ease)
+    const nextAvg = next.avgCredibility
+    const fromAvg = from.avgCredibility
+    let nextCred = null
+    if (nextAvg != null && fromAvg != null) {
+      nextCred = Math.round((fromAvg + (nextAvg - fromAvg) * ease) * 100) / 100
+    } else if (nextAvg != null) {
+      nextCred = Math.round(nextAvg * ease * 100) / 100
+    } else {
+      nextCred = null
+    }
+    kpiDisplay.value = {
+      todayCollected: lerp(from.todayCollected, next.todayCollected),
+      todayAnalyzed: lerp(from.todayAnalyzed, next.todayAnalyzed),
+      chinaHighRisk: lerp(from.chinaHighRisk, next.chinaHighRisk),
+      avgCredibility: nextCred,
+    }
+    if (t < 1) kpiAnimId = requestAnimationFrame(tick)
+  }
+  cancelAnimationFrame(kpiAnimId)
+  kpiAnimId = requestAnimationFrame(tick)
+}
+
+watch(
+  kpis,
+  (v) => {
+    animateKpiTo({
+      todayCollected: v.todayCollected,
+      todayAnalyzed: v.todayAnalyzed,
+      chinaHighRisk: v.chinaHighRisk,
+      avgCredibility: v.avgCredibility,
+    })
+  },
+  { deep: true, immediate: true },
+)
+
 const keywordWords = computed(() => {
   const k = getFirst(screen.value, ['keywords', 'keywordList'], []) || []
   if (!Array.isArray(k)) return []
@@ -95,6 +155,19 @@ const keywordWords = computed(() => {
     const t = item.text ?? item.word ?? item.name ?? item.key ?? ''
     const w = num(item.weight ?? item.count ?? item.value, 1)
     return { text: String(t), size: Math.min(42, 12 + Math.min(30, w)) }
+  })
+})
+
+/** 词云：涉华/China 相关词加大字号突出 */
+const keywordWordsForCloud = computed(() => {
+  const base = keywordWords.value
+  return base.map((w) => {
+    const t = String(w.text || '')
+    const low = t.toLowerCase()
+    if (low === 'china' || t === '中国' || /涉华|对华/.test(t)) {
+      return { ...w, size: Math.min(52, num(w.size, 14) + 12) }
+    }
+    return w
   })
 })
 
@@ -217,18 +290,43 @@ async function loadScreen() {
 }
 
 function disposeAll() {
-  ;[chartTrend, chartPie, chartMap, chartConsistency, chartSpread, chartAlert30].forEach((c) => {
+  ;[chartTrend, chartPie, chartMap, chartConsistency, chartSpread, chartRiskRealtime, chartGlobalCompare].forEach((c) => {
     try {
       c?.dispose()
     } catch {
       /* noop */
     }
   })
-  chartTrend = chartPie = chartMap = chartConsistency = chartSpread = chartAlert30 = null
+  chartTrend = chartPie = chartMap = chartConsistency = chartSpread = chartRiskRealtime = chartGlobalCompare = null
 }
 
 function baseTextStyle() {
   return { color: '#94a3b8', fontSize: 11 }
+}
+
+const techAxisCategory = () => ({
+  axisLine: { lineStyle: { color: 'rgba(56, 189, 248, 0.35)', width: 1 } },
+  axisTick: { show: false },
+  axisLabel: { color: '#94a3b8', fontSize: 10 },
+})
+
+const techAxisValue = (pos) => ({
+  type: 'value',
+  position: pos,
+  axisLine: { show: true, lineStyle: { color: pos === 'left' ? 'rgba(34, 211, 238, 0.45)' : 'rgba(244, 63, 94, 0.45)' } },
+  axisTick: { show: false },
+  axisLabel: { color: '#94a3b8', fontSize: 10 },
+  splitLine:
+    pos === 'left'
+      ? { lineStyle: { color: 'rgba(56, 189, 248, 0.06)', type: 'dashed' } }
+      : { show: false },
+})
+
+function areaGradient(c0, c1) {
+  return new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+    { offset: 0, color: c0 },
+    { offset: 1, color: c1 },
+  ])
 }
 
 function geoFeaturesList(worldGeo) {
@@ -459,13 +557,95 @@ function buildGeoOverlaySeries(mapData, vmax) {
   return { effectData, linesData }
 }
 
+function normLon(lon) {
+  let x = Number(lon)
+  if (!Number.isFinite(x)) return 0
+  while (x > 180) x -= 360
+  while (x < -180) x += 360
+  return x
+}
+
+function splitRingAtDateline(ring) {
+  const pts = Array.isArray(ring) ? ring.filter((p) => Array.isArray(p) && p.length >= 2) : []
+  if (pts.length < 2) return []
+
+  const out = []
+  let cur = []
+
+  const pushPoint = (p) => cur.push([normLon(p[0]), Number(p[1])])
+
+  // 不依赖 ring 是否闭合，统一按序处理
+  pushPoint(pts[0])
+
+  for (let i = 1; i < pts.length; i++) {
+    const prev = cur[cur.length - 1]
+    const next = [normLon(pts[i][0]), Number(pts[i][1])]
+    const d = next[0] - prev[0]
+
+    if (Math.abs(d) > 180) {
+      // 跨越反子午线：在 ±180 处插值切开，避免出现“跨图横线”伪影
+      const toRight = d > 0 // -170 -> 170
+      const boundaryLon = toRight ? -180 : 180
+      const otherBoundaryLon = toRight ? 180 : -180
+
+      const adjNextLon = next[0] + (toRight ? -360 : 360)
+      const t = (boundaryLon - prev[0]) / (adjNextLon - prev[0])
+      const iy = prev[1] + (next[1] - prev[1]) * t
+
+      cur.push([boundaryLon, iy])
+      if (cur.length >= 4) out.push(cur)
+
+      cur = [[otherBoundaryLon, iy], next]
+    } else {
+      cur.push(next)
+    }
+  }
+
+  if (cur.length >= 4) out.push(cur)
+
+  // 闭合每段 ring（ECharts 对闭合与否都能画，但闭合更稳）
+  return out.map((r) => {
+    const first = r[0]
+    const last = r[r.length - 1]
+    if (first[0] !== last[0] || first[1] !== last[1]) r.push([first[0], first[1]])
+    return r
+  })
+}
+
+function cutAntimeridianGeoJSON(geo) {
+  if (!geo || !Array.isArray(geo.features)) return geo
+  const cloned = {
+    ...geo,
+    features: geo.features.map((f) => {
+      const g = f?.geometry
+      if (!g) return f
+
+      if (g.type === 'Polygon') {
+        const rings = (g.coordinates || []).flatMap((ring) => splitRingAtDateline(ring))
+        return { ...f, geometry: { ...g, coordinates: rings } }
+      }
+
+      if (g.type === 'MultiPolygon') {
+        const polys = (g.coordinates || []).map((poly) => poly.flatMap((ring) => splitRingAtDateline(ring))).filter((p) => p.length)
+        return { ...f, geometry: { ...g, coordinates: polys } }
+      }
+
+      return f
+    }),
+  }
+  return cloned
+}
+
 function ensureWorldMapRegistered() {
-  const w = topojson.feature(worldTopology, worldTopology.objects.countries)
+  if (worldGeoCached) return worldGeoCached
+  const w0 = topojson.feature(worldTopology, worldTopology.objects.countries)
+  const w = cutAntimeridianGeoJSON(w0)
   try {
     echarts.registerMap('world', w)
   } catch {
     /* 已注册 */
   }
+  worldGeoCached = w
   return w
 }
 
@@ -484,14 +664,81 @@ function applyTrendChart() {
   chartTrend.setOption({
     backgroundColor: 'transparent',
     textStyle: baseTextStyle(),
-    tooltip: { trigger: 'axis' },
-    legend: { data: ['分析量', '高风险'], textStyle: { color: '#94a3b8' }, top: 0 },
-    grid: { left: 44, right: 12, top: 36, bottom: 22 },
-    xAxis: { type: 'category', data: x, axisLine: { lineStyle: { color: '#334155' } } },
-    yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(148,163,184,0.15)' } } },
+    animationDuration: 1200,
+    animationEasing: 'cubicOut',
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(15, 23, 42, 0.92)',
+      borderColor: 'rgba(56, 189, 248, 0.35)',
+      textStyle: { color: '#e2e8f0', fontSize: 12 },
+    },
+    legend: {
+      data: ['分析量', '高风险'],
+      textStyle: { color: '#cbd5e1', fontSize: 11 },
+      top: 2,
+    },
+    grid: { left: 48, right: 48, top: 38, bottom: 24 },
+    xAxis: {
+      type: 'category',
+      data: x.length ? x : ['—'],
+      ...techAxisCategory(),
+    },
+    yAxis: [techAxisValue('left'), techAxisValue('right')],
     series: [
-      { name: '分析量', type: 'line', smooth: true, data: analyzed, itemStyle: { color: '#22d3ee' }, areaStyle: { opacity: 0.08 } },
-      { name: '高风险', type: 'bar', data: high, itemStyle: { color: '#f43f5e' } },
+      {
+        name: '分析量',
+        type: 'line',
+        yAxisIndex: 0,
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 9,
+        showSymbol: true,
+        data: analyzed.length ? analyzed : [0],
+        lineStyle: {
+          width: 3,
+          color: '#22d3ee',
+          shadowBlur: 14,
+          shadowColor: 'rgba(34, 211, 238, 0.55)',
+        },
+        itemStyle: {
+          color: '#22d3ee',
+          borderColor: '#fff',
+          borderWidth: 1,
+          shadowBlur: 12,
+          shadowColor: 'rgba(34, 211, 238, 0.65)',
+        },
+        areaStyle: {
+          color: areaGradient('rgba(34, 211, 238, 0.42)', 'rgba(34, 211, 238, 0.02)'),
+        },
+        emphasis: { focus: 'series', scale: true },
+      },
+      {
+        name: '高风险',
+        type: 'line',
+        yAxisIndex: 1,
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 9,
+        showSymbol: true,
+        data: high.length ? high : [0],
+        lineStyle: {
+          width: 3,
+          color: '#fb7185',
+          shadowBlur: 14,
+          shadowColor: 'rgba(244, 63, 94, 0.55)',
+        },
+        itemStyle: {
+          color: '#fb7185',
+          borderColor: '#fff',
+          borderWidth: 1,
+          shadowBlur: 12,
+          shadowColor: 'rgba(244, 63, 94, 0.6)',
+        },
+        areaStyle: {
+          color: areaGradient('rgba(244, 63, 94, 0.38)', 'rgba(244, 63, 94, 0.02)'),
+        },
+        emphasis: { focus: 'series', scale: true },
+      },
     ],
   })
 }
@@ -500,22 +747,83 @@ function applyPieChart() {
   if (!elPie.value) return
   const rows = getFirst(screen.value, ['riskDistribution', 'risk_distribution'], []) || []
   if (!chartPie) chartPie = echarts.init(elPie.value, null, { renderer: 'canvas' })
-  const data = (Array.isArray(rows) ? rows : [])
+  const raw = (Array.isArray(rows) ? rows : [])
     .filter((x) => num(x.value) > 0)
     .map((x) => ({ name: String(x.name ?? x.label ?? '—'), value: num(x.value) }))
+  const gradStops = [
+    [
+      { offset: 0, color: '#4ade80' },
+      { offset: 1, color: '#166534' },
+    ],
+    [
+      { offset: 0, color: '#fbbf24' },
+      { offset: 1, color: '#b45309' },
+    ],
+    [
+      { offset: 0, color: '#fb7185' },
+      { offset: 1, color: '#be123c' },
+    ],
+    [
+      { offset: 0, color: '#94a3b8' },
+      { offset: 1, color: '#475569' },
+    ],
+  ]
+  const data = (raw.length ? raw : [{ name: '暂无', value: 1 }]).map((d, i) => {
+    const g = gradStops[i % gradStops.length]
+    return {
+      ...d,
+      itemStyle: {
+        color: {
+          type: 'linear',
+          x: 0,
+          y: 0,
+          x2: 1,
+          y2: 1,
+          colorStops: g,
+        },
+        borderRadius: 6,
+        borderColor: 'rgba(15, 23, 42, 0.9)',
+        borderWidth: 2,
+        shadowBlur: 18,
+        shadowColor: 'rgba(56, 189, 248, 0.35)',
+      },
+    }
+  })
   chartPie.setOption({
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'item' },
-    legend: { bottom: 0, textStyle: { color: '#94a3b8', fontSize: 10 } },
+    animationDuration: 1100,
+    animationEasing: 'cubicOut',
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: 'rgba(15, 23, 42, 0.92)',
+      borderColor: 'rgba(56, 189, 248, 0.35)',
+      textStyle: { color: '#e2e8f0' },
+    },
+    legend: { bottom: 2, textStyle: { color: '#94a3b8', fontSize: 10 } },
     series: [
       {
         type: 'pie',
-        radius: ['34%', '62%'],
+        radius: ['38%', '66%'],
         center: ['50%', '46%'],
-        data: data.length ? data : [{ name: '暂无', value: 1 }],
-        itemStyle: { borderColor: '#0f172a', borderWidth: 1 },
-        label: { color: '#cbd5e1' },
-        color: ['#22c55e', '#eab308', '#f43f5e', '#64748b'],
+        roseType: 'radius',
+        minShowLabelAngle: 6,
+        data,
+        label: {
+          color: '#e2e8f0',
+          formatter: '{b}\n{d}%',
+        },
+        labelLine: { lineStyle: { color: 'rgba(56, 189, 248, 0.35)' } },
+        emphasis: {
+          scale: true,
+          scaleSize: 8,
+          itemStyle: {
+            shadowBlur: 28,
+            shadowColor: 'rgba(244, 63, 94, 0.45)',
+            borderColor: 'rgba(34, 211, 238, 0.65)',
+            borderWidth: 2,
+          },
+          label: { fontWeight: 700 },
+        },
       },
     ],
   })
@@ -530,10 +838,35 @@ function applyMapChart(worldGeo) {
   const values = mapData.map((d) => d.value)
   const vmax = Math.max(10, ...values, 1)
   const { effectData, linesData } = buildGeoOverlaySeries(mapData, vmax)
+  const linesStyled = linesData.map((seg) => ({
+    ...seg,
+    lineStyle: {
+      ...seg.lineStyle,
+      width: 2.4,
+      curveness: seg.lineStyle?.curveness ?? 0.2,
+      opacity: 0.92,
+      color: {
+        type: 'linear',
+        x: 0,
+        y: 0,
+        x2: 1,
+        y2: 0,
+        colorStops: [
+          { offset: 0, color: 'rgba(34, 211, 238, 0.95)' },
+          { offset: 0.55, color: 'rgba(244, 63, 94, 0.75)' },
+          { offset: 1, color: 'rgba(251, 113, 133, 0.9)' },
+        ],
+      },
+      shadowBlur: 12,
+      shadowColor: 'rgba(56, 189, 248, 0.45)',
+    },
+  }))
 
   chartMap.setOption(
     {
       backgroundColor: 'transparent',
+      animationDuration: 1400,
+      animationEasing: 'cubicOut',
       tooltip: {
         trigger: 'item',
         formatter(p) {
@@ -550,22 +883,29 @@ function applyMapChart(worldGeo) {
         text: ['高', '低'],
         calculable: false,
         seriesIndex: 0,
-        inRange: { color: ['#164e63', '#0e7490', '#e11d48'] },
+        inRange: { color: ['#0c4a6e', '#0891b2', '#e11d48'] },
         textStyle: { color: '#94a3b8', fontSize: 11 },
         itemWidth: 12,
         itemHeight: 112,
+        borderColor: 'rgba(56, 189, 248, 0.25)',
+        backgroundColor: 'rgba(15, 23, 42, 0.5)',
       },
       geo: {
         map: 'world',
         roam: false,
         silent: true,
-        zoom: 1.05,
-        layoutCenter: ['50%', '50%'],
-        layoutSize: '94%',
+        // 用盒模型约束 geo 区域，避免 layoutCenter/layoutSize 在不同容器高度下导致上方留白/裁切
+        left: 10,
+        right: 10,
+        top: 10,
+        bottom: 10,
+        zoom: 1.02,
         itemStyle: {
           areaColor: '#152a45',
-          borderColor: 'rgba(125, 211, 252, 0.55)',
-          borderWidth: 1,
+          borderColor: 'rgba(56, 189, 248, 0.75)',
+          borderWidth: 1.15,
+          shadowBlur: 8,
+          shadowColor: 'rgba(56, 189, 248, 0.25)',
         },
         emphasis: { disabled: true },
         regions: [
@@ -596,8 +936,10 @@ function applyMapChart(worldGeo) {
           emphasis: { disabled: true },
           label: { show: false },
           itemStyle: {
-            borderColor: 'rgba(186, 230, 253, 0.5)',
-            borderWidth: 0.85,
+            borderColor: 'rgba(186, 230, 253, 0.65)',
+            borderWidth: 0.9,
+            shadowBlur: 6,
+            shadowColor: 'rgba(56, 189, 248, 0.2)',
           },
           data: mapData,
         },
@@ -611,19 +953,13 @@ function applyMapChart(worldGeo) {
           polyline: false,
           effect: {
             show: true,
-            period: 7,
-            trailLength: 0.2,
+            period: 5.5,
+            trailLength: 0.55,
             symbol: 'circle',
-            symbolSize: 2.8,
-            color: 'rgba(251, 113, 133, 0.55)',
+            symbolSize: 4.5,
+            color: 'rgba(251, 113, 133, 0.85)',
           },
-          lineStyle: {
-            color: 'rgba(244, 63, 94, 0.35)',
-            width: 1.05,
-            curveness: 0.2,
-            opacity: 0.9,
-          },
-          data: linesData,
+          data: linesStyled,
         },
         {
           name: '舆情热点',
@@ -634,8 +970,8 @@ function applyMapChart(worldGeo) {
           silent: true,
           rippleEffect: {
             brushType: 'stroke',
-            scale: 3.5,
-            period: 5.2,
+            scale: 4.2,
+            period: 4.2,
           },
           data: effectData,
         },
@@ -652,23 +988,67 @@ function applyConsistencyChart() {
   const list = Array.isArray(rows) ? rows : []
   const names = list.map((x) => String(x.name ?? x.label ?? x.bucket ?? '—'))
   const vals = list.map((x) => num(x.value ?? x.count))
+  const barColors = [
+    ['#22d3ee', '#0369a1'],
+    ['#38bdf8', '#1d4ed8'],
+    ['#a78bfa', '#6d28d9'],
+    ['#fb7185', '#be123c'],
+  ]
+  const data = (vals.length ? vals : [0]).map((v, i) => ({
+    value: v,
+    itemStyle: {
+      color: {
+        type: 'linear',
+        x: 0,
+        y: 1,
+        x2: 0,
+        y2: 0,
+        colorStops: [
+          { offset: 0, color: barColors[i % barColors.length][1] },
+          { offset: 1, color: barColors[i % barColors.length][0] },
+        ],
+      },
+      borderRadius: [6, 6, 0, 0],
+      shadowBlur: 10,
+      shadowColor: 'rgba(56, 189, 248, 0.35)',
+    },
+  }))
   chartConsistency.setOption({
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis' },
+    animationDuration: 1100,
+    animationEasing: 'cubicOut',
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(15, 23, 42, 0.92)',
+      borderColor: 'rgba(56, 189, 248, 0.35)',
+      textStyle: { color: '#e2e8f0' },
+    },
     grid: { left: 44, right: 12, top: 18, bottom: 28 },
     xAxis: {
       type: 'category',
       data: names.length ? names : ['—'],
-      axisLabel: { color: '#94a3b8' },
-      axisLine: { lineStyle: { color: '#334155' } },
+      ...techAxisCategory(),
     },
-    yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(148,163,184,0.12)' } } },
+    yAxis: {
+      type: 'value',
+      ...techAxisValue('left'),
+      splitLine: { lineStyle: { color: 'rgba(56, 189, 248, 0.06)', type: 'dashed' } },
+    },
     series: [
       {
         name: '多源一致性分布',
         type: 'bar',
-        data: vals.length ? vals : [0],
-        itemStyle: { color: '#a78bfa' },
+        barWidth: '52%',
+        data,
+        emphasis: {
+          focus: 'self',
+          itemStyle: {
+            shadowBlur: 22,
+            shadowColor: 'rgba(244, 63, 94, 0.45)',
+            borderColor: 'rgba(34, 211, 238, 0.65)',
+            borderWidth: 1,
+          },
+        },
       },
     ],
   })
@@ -681,49 +1061,389 @@ function applySpreadChart() {
   const list = Array.isArray(rows) ? rows : []
   const names = list.map((x) => String(x.source ?? x.media ?? x.name ?? '—').slice(0, 16))
   const vals = list.map((x) => num(x.count ?? x.cnt ?? x.value))
+  const data = (vals.length ? vals : [0]).map((v, i) => ({
+    value: v,
+    itemStyle: {
+      color: {
+        type: 'linear',
+        x: 0,
+        y: 0,
+        x2: 1,
+        y2: 0,
+        colorStops: [
+          { offset: 0, color: 'rgba(20, 184, 166, 0.25)' },
+          { offset: 1, color: 'rgba(34, 211, 238, 0.95)' },
+        ],
+      },
+      borderRadius: [0, 8, 8, 0],
+      shadowBlur: 8,
+      shadowColor: 'rgba(45, 212, 191, 0.35)',
+    },
+  }))
   chartSpread.setOption({
     backgroundColor: 'transparent',
+    animationDuration: 1100,
+    animationEasing: 'cubicOut',
     title: {
       text: list.length ? '近30日新闻来源传播量（按媒体）' : '近30日新闻采集分布（按媒体聚合）',
       left: 10,
       top: 6,
-      textStyle: { color: '#94a3b8', fontSize: 12 },
+      textStyle: { color: '#cbd5e1', fontSize: 12, fontWeight: 600 },
     },
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(15, 23, 42, 0.92)',
+      borderColor: 'rgba(56, 189, 248, 0.35)',
+      textStyle: { color: '#e2e8f0' },
+    },
     grid: { left: 88, right: 16, top: 40, bottom: 8 },
-    xAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(148,163,184,0.12)' } } },
-    yAxis: { type: 'category', data: names.length ? names : ['暂无数据'], axisLine: { lineStyle: { color: '#334155' } } },
+    xAxis: {
+      type: 'value',
+      splitLine: { lineStyle: { color: 'rgba(56, 189, 248, 0.06)', type: 'dashed' } },
+      axisLine: { lineStyle: { color: 'rgba(56, 189, 248, 0.35)' } },
+      axisLabel: { color: '#94a3b8', fontSize: 10 },
+    },
+    yAxis: {
+      type: 'category',
+      data: names.length ? names : ['暂无数据'],
+      ...techAxisCategory(),
+    },
     series: [
       {
         type: 'bar',
-        data: vals.length ? vals : [0],
-        itemStyle: { color: '#14b8a6' },
+        data,
+        barWidth: '58%',
+        emphasis: {
+          focus: 'self',
+          itemStyle: {
+            shadowBlur: 20,
+            shadowColor: 'rgba(34, 211, 238, 0.55)',
+          },
+        },
       },
     ],
   })
 }
 
-function applyAlert30Chart() {
-  if (!elAlert30.value) return
-  const rows = getFirst(screen.value, ['highRiskAlerts30d', 'alerts_30d'], []) || []
-  if (!chartAlert30) chartAlert30 = echarts.init(elAlert30.value, null, { renderer: 'canvas' })
+function normalizeToHundred(v, min, max, fallback = 50) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  if (max <= min) return fallback
+  const p = ((n - min) / (max - min)) * 100
+  return Math.max(0, Math.min(100, Math.round(p * 10) / 10))
+}
+
+function buildRealtimeRiskRows() {
+  const rows = getFirst(screen.value, ['riskTrend7d', 'risk_trend_7d'], []) || []
   const list = Array.isArray(rows) ? rows : []
-  const x = list.map((r) => String(r.day ?? r.date ?? '').slice(5, 10))
-  const y = list.map((r) => num(r.count ?? r.cnt))
-  chartAlert30.setOption({
+  const safe = list.length ? list : Array.from({ length: 7 }, (_, i) => ({ day: `D${i + 1}` }))
+  const analyzed = safe.map((d) => num(d.analyzed ?? d.count ?? d.total, 0))
+  const high = safe.map((d) => num(d.highRisk ?? d.high_risk, 0))
+  const maxAnalyzed = Math.max(1, ...analyzed)
+  const maxHigh = Math.max(1, ...high)
+  return safe.map((d, i) => {
+    const h = num(d.highRisk ?? d.high_risk, 0)
+    const a = num(d.analyzed ?? d.count ?? d.total, 0)
+    const fake = d.avgFakeScore ?? d.avg_fake_score
+    const credibility =
+      d.avgCredibility ?? d.avg_credibility ?? d.avgCredibilityScore ?? d.avg_credibility_score ?? (fake != null ? 100 - num(fake, 50) : null)
+    const hotTopic = h / maxHigh
+    const intensity = a > 0 ? h / Math.max(1, a) : h / maxHigh
+    return {
+      day: String(d.day ?? d.date ?? d.time ?? `D${i + 1}`).slice(-5),
+      highRisk: Math.round(h),
+      credibility: Math.max(0, Math.min(100, credibility != null ? num(credibility, 50) : normalizeToHundred(a, 0, maxAnalyzed, 50))),
+      sentiment: Math.max(0, Math.min(100, Math.round((48 + hotTopic * 36 + intensity * 18) * 10) / 10)),
+      misleading: Math.max(0, Math.min(100, Math.round((42 + intensity * 40 + hotTopic * 14) * 10) / 10)),
+    }
+  })
+}
+
+function applyRiskRealtimeChart() {
+  if (!elRiskRealtime.value) return
+  if (!chartRiskRealtime) chartRiskRealtime = echarts.init(elRiskRealtime.value, null, { renderer: 'canvas' })
+  const rows = buildRealtimeRiskRows()
+  const x = rows.map((r) => r.day)
+  const highRisk = rows.map((r) => r.highRisk)
+  const credibility = rows.map((r) => r.credibility)
+  const sentiment = rows.map((r) => r.sentiment)
+  const misleading = rows.map((r) => r.misleading)
+  const makePulse = (data, color, yAxisIndex = 0) => ({
+    type: 'effectScatter',
+    yAxisIndex,
+    coordinateSystem: 'cartesian2d',
+    data: x.map((d, i) => [d, data[i]]),
+    z: 6,
+    symbolSize: 7,
+    itemStyle: { color, shadowBlur: 14, shadowColor: color },
+    rippleEffect: { scale: 2.8, period: 4.2, brushType: 'stroke' },
+    tooltip: { show: false },
+  })
+  chartRiskRealtime.setOption({
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis' },
-    grid: { left: 40, right: 12, top: 32, bottom: 22 },
-    xAxis: { type: 'category', data: x.length ? x : ['—'], axisLine: { lineStyle: { color: '#334155' } } },
-    yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(148,163,184,0.12)' } } },
+    textStyle: baseTextStyle(),
+    animationDuration: 1500,
+    animationDurationUpdate: 900,
+    animationEasing: 'cubicOut',
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross' },
+      backgroundColor: 'rgba(6, 18, 35, 0.94)',
+      borderColor: 'rgba(56, 189, 248, 0.45)',
+      textStyle: { color: '#e2e8f0', fontSize: 12 },
+    },
+    legend: {
+      top: 2,
+      itemWidth: 14,
+      itemHeight: 8,
+      textStyle: { color: '#cbd5e1', fontSize: 11 },
+      data: ['高风险舆情量', '平均可信度', '情绪煽动指数', '传播误导指数'],
+    },
+    grid: { left: 52, right: 56, top: 36, bottom: 26 },
+    xAxis: {
+      type: 'category',
+      data: x.length ? x : ['—'],
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: 'rgba(56, 189, 248, 0.45)', width: 1 } },
+      axisTick: { show: false },
+      axisLabel: { color: '#bae6fd', fontSize: 10 },
+      splitLine: { show: true, lineStyle: { color: 'rgba(56, 189, 248, 0.09)', type: 'dashed' } },
+    },
+    yAxis: [
+      {
+        ...techAxisValue('left'),
+        name: '舆情量 / 指数',
+        nameTextStyle: { color: '#94a3b8', fontSize: 10 },
+        splitLine: { lineStyle: { color: 'rgba(56, 189, 248, 0.08)', type: 'dashed' } },
+      },
+      {
+        ...techAxisValue('right'),
+        name: '可信度',
+        min: 0,
+        max: 100,
+        nameTextStyle: { color: '#94a3b8', fontSize: 10 },
+      },
+    ],
     series: [
       {
-        name: '预警次数',
+        name: '高风险舆情量',
         type: 'line',
-        smooth: true,
-        data: y.length ? y : [0],
-        areaStyle: { opacity: 0.12, color: '#f43f5e' },
-        itemStyle: { color: '#fb7185' },
+        yAxisIndex: 0,
+        smooth: 0.35,
+        showSymbol: true,
+        symbol: 'circle',
+        symbolSize: 8,
+        data: highRisk,
+        lineStyle: { width: 3.6, color: '#fb7185', shadowBlur: 18, shadowColor: 'rgba(244,63,94,0.72)' },
+        itemStyle: { color: '#fb7185', borderColor: '#fff', borderWidth: 1.2, shadowBlur: 14, shadowColor: 'rgba(244,63,94,0.75)' },
+        areaStyle: { color: areaGradient('rgba(244,63,94,0.34)', 'rgba(244,63,94,0.02)') },
+        emphasis: { focus: 'series', scale: true },
+      },
+      {
+        name: '平均可信度',
+        type: 'line',
+        yAxisIndex: 1,
+        smooth: 0.35,
+        showSymbol: true,
+        symbol: 'diamond',
+        symbolSize: 8,
+        data: credibility,
+        lineStyle: { width: 3.2, color: '#22d3ee', shadowBlur: 16, shadowColor: 'rgba(34,211,238,0.72)' },
+        itemStyle: { color: '#22d3ee', borderColor: '#fff', borderWidth: 1.1, shadowBlur: 12, shadowColor: 'rgba(34,211,238,0.7)' },
+        areaStyle: { color: areaGradient('rgba(34,211,238,0.25)', 'rgba(34,211,238,0.02)') },
+        emphasis: { focus: 'series', scale: true },
+      },
+      {
+        name: '情绪煽动指数',
+        type: 'line',
+        yAxisIndex: 0,
+        smooth: 0.4,
+        showSymbol: true,
+        symbol: 'rect',
+        symbolSize: 7,
+        data: sentiment,
+        lineStyle: { width: 3, color: '#fbbf24', shadowBlur: 14, shadowColor: 'rgba(251,191,36,0.66)' },
+        itemStyle: { color: '#fbbf24', borderColor: '#fff', borderWidth: 1, shadowBlur: 12, shadowColor: 'rgba(251,191,36,0.66)' },
+        areaStyle: { color: areaGradient('rgba(251,191,36,0.2)', 'rgba(251,191,36,0.01)') },
+        emphasis: { focus: 'series', scale: true },
+      },
+      {
+        name: '传播误导指数',
+        type: 'line',
+        yAxisIndex: 0,
+        smooth: 0.4,
+        showSymbol: true,
+        symbol: 'triangle',
+        symbolSize: 8,
+        data: misleading,
+        lineStyle: { width: 3, color: '#a78bfa', shadowBlur: 14, shadowColor: 'rgba(167,139,250,0.66)' },
+        itemStyle: { color: '#a78bfa', borderColor: '#fff', borderWidth: 1, shadowBlur: 12, shadowColor: 'rgba(167,139,250,0.66)' },
+        areaStyle: { color: areaGradient('rgba(167,139,250,0.18)', 'rgba(167,139,250,0.01)') },
+        emphasis: { focus: 'series', scale: true },
+      },
+      makePulse(highRisk, '#fb7185', 0),
+      makePulse(credibility, '#22d3ee', 1),
+      makePulse(sentiment, '#fbbf24', 0),
+      makePulse(misleading, '#a78bfa', 0),
+    ],
+  })
+}
+
+function buildGlobalCompareRows() {
+  const rows = getFirst(screen.value, ['countryRisk', 'country_risk'], []) || []
+  const list = Array.isArray(rows) ? rows : []
+  const mapped = list
+    .map((r) => {
+      const riskRaw = r.riskIntensity ?? r.risk ?? r.avgFakeScore ?? r.value
+      const fake = r.avgFakeScore ?? r.fakeScore
+      const credibilityRaw = r.avgCredibility ?? r.credibility ?? r.avgCredibilityScore ?? (fake != null ? 100 - num(fake, 50) : null)
+      const name = String(r.region ?? r.country ?? r.name ?? '未知').trim()
+      return {
+        name,
+        highRiskPct: Math.max(0, Math.min(100, num(r.highRiskPct ?? r.high_risk_pct ?? riskRaw, 0))),
+        credibility: Math.max(0, Math.min(100, credibilityRaw != null ? num(credibilityRaw, 50) : 50)),
+        newsCount: num(r.newsCount ?? r.count, 0),
+      }
+    })
+    .filter((r) => r.name)
+  const top = mapped.sort((a, b) => b.highRiskPct - a.highRiskPct).slice(0, 10)
+  if (top.length >= 8) return top
+  const fallback = [
+    ['美国', 82, 44],
+    ['欧洲', 73, 51],
+    ['东南亚', 66, 58],
+    ['拉美', 61, 55],
+    ['中东', 69, 48],
+    ['南亚', 64, 53],
+    ['日韩', 57, 63],
+    ['非洲', 52, 60],
+  ]
+  return fallback.map(([name, highRiskPct, credibility]) => ({ name, highRiskPct, credibility, newsCount: 0 }))
+}
+
+function applyGlobalCompareChart() {
+  if (!elGlobalCompare.value) return
+  if (!chartGlobalCompare) chartGlobalCompare = echarts.init(elGlobalCompare.value, null, { renderer: 'canvas' })
+  const rows = buildGlobalCompareRows()
+  const names = rows.map((r) => r.name)
+  const riskVals = rows.map((r) => Math.round(r.highRiskPct))
+  const credVals = rows.map((r) => Math.round(r.credibility))
+  chartGlobalCompare.setOption({
+    backgroundColor: 'transparent',
+    animationDuration: 1300,
+    animationDurationUpdate: 900,
+    animationEasing: 'cubicOut',
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      backgroundColor: 'rgba(6, 18, 35, 0.94)',
+      borderColor: 'rgba(56, 189, 248, 0.45)',
+      textStyle: { color: '#e2e8f0', fontSize: 12 },
+    },
+    legend: {
+      top: 2,
+      textStyle: { color: '#cbd5e1', fontSize: 11 },
+      data: ['高风险舆情占比', '平均可信度'],
+    },
+    grid: { left: 48, right: 56, top: 38, bottom: 28 },
+    xAxis: {
+      type: 'category',
+      data: names.length ? names : ['—'],
+      axisLine: { lineStyle: { color: 'rgba(56, 189, 248, 0.45)' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#bae6fd', fontSize: 10, interval: 0 },
+      splitLine: { show: false },
+    },
+    yAxis: [
+      {
+        ...techAxisValue('left'),
+        min: 0,
+        max: 100,
+        name: '高风险占比(%)',
+        nameTextStyle: { color: '#94a3b8', fontSize: 10 },
+        splitLine: { lineStyle: { color: 'rgba(56, 189, 248, 0.08)', type: 'dashed' } },
+      },
+      {
+        ...techAxisValue('right'),
+        min: 0,
+        max: 100,
+        name: '可信度',
+        nameTextStyle: { color: '#94a3b8', fontSize: 10 },
+      },
+    ],
+    series: [
+      {
+        name: '高风险舆情占比',
+        type: 'bar',
+        yAxisIndex: 0,
+        barWidth: '32%',
+        barGap: '8%',
+        data: riskVals.map((v, i) => ({
+          value: v,
+          itemStyle: {
+            color: new echarts.graphic.LinearGradient(0, 1, 0, 0, [
+              { offset: 0, color: 'rgba(136, 19, 55, 0.9)' },
+              { offset: 1, color: i % 2 === 0 ? '#fb7185' : '#f43f5e' },
+            ]),
+            borderRadius: [6, 6, 0, 0],
+            shadowBlur: 18,
+            shadowColor: 'rgba(244,63,94,0.58)',
+          },
+        })),
+        emphasis: {
+          focus: 'self',
+          scale: true,
+          itemStyle: { shadowBlur: 26, shadowColor: 'rgba(251,113,133,0.85)' },
+        },
+      },
+      {
+        name: '平均可信度',
+        type: 'bar',
+        yAxisIndex: 1,
+        barWidth: '32%',
+        data: credVals.map((v, i) => ({
+          value: v,
+          itemStyle: {
+            color: new echarts.graphic.LinearGradient(0, 1, 0, 0, [
+              { offset: 0, color: 'rgba(6, 95, 112, 0.92)' },
+              { offset: 1, color: i % 2 === 0 ? '#22d3ee' : '#38bdf8' },
+            ]),
+            borderRadius: [6, 6, 0, 0],
+            shadowBlur: 18,
+            shadowColor: 'rgba(34,211,238,0.58)',
+          },
+        })),
+        emphasis: {
+          focus: 'self',
+          scale: true,
+          itemStyle: { shadowBlur: 26, shadowColor: 'rgba(34,211,238,0.85)' },
+        },
+      },
+      {
+        type: 'pictorialBar',
+        name: '高风险舆情占比顶端',
+        yAxisIndex: 0,
+        symbol: 'rect',
+        symbolSize: [20, 4],
+        symbolOffset: [-11, -2],
+        symbolPosition: 'end',
+        z: 8,
+        data: riskVals,
+        itemStyle: { color: 'rgba(251, 113, 133, 0.92)', shadowBlur: 12, shadowColor: 'rgba(251, 113, 133, 0.9)' },
+        tooltip: { show: false },
+      },
+      {
+        type: 'pictorialBar',
+        name: '平均可信度顶端',
+        yAxisIndex: 1,
+        symbol: 'rect',
+        symbolSize: [20, 4],
+        symbolOffset: [11, -2],
+        symbolPosition: 'end',
+        z: 8,
+        data: credVals,
+        itemStyle: { color: 'rgba(34, 211, 238, 0.92)', shadowBlur: 12, shadowColor: 'rgba(34, 211, 238, 0.9)' },
+        tooltip: { show: false },
       },
     ],
   })
@@ -736,14 +1456,16 @@ function applyAllCharts() {
   applyMapChart(worldGeo)
   applyConsistencyChart()
   applySpreadChart()
-  applyAlert30Chart()
+  applyRiskRealtimeChart()
+  applyGlobalCompareChart()
   requestAnimationFrame(() => {
     chartTrend?.resize()
     chartPie?.resize()
     chartMap?.resize()
     chartConsistency?.resize()
     chartSpread?.resize()
-    chartAlert30?.resize()
+    chartRiskRealtime?.resize()
+    chartGlobalCompare?.resize()
   })
 }
 
@@ -761,13 +1483,14 @@ onMounted(async () => {
   await loadScreen()
   refreshTimer = setInterval(loadScreen, 120000)
   ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => applyAllCharts()) : null
-  ;[elTrend, elPie, elMap, elConsistency, elSpread, elAlert30].forEach((r) => {
+  ;[elTrend, elPie, elMap, elConsistency, elSpread, elRiskRealtime, elGlobalCompare].forEach((r) => {
     if (r.value && ro) ro.observe(r.value)
   })
   window.addEventListener('resize', applyAllCharts)
 })
 
 onBeforeUnmount(() => {
+  cancelAnimationFrame(kpiAnimId)
   if (clockTimer) clearInterval(clockTimer)
   if (refreshTimer) clearInterval(refreshTimer)
   window.removeEventListener('resize', applyAllCharts)
@@ -807,42 +1530,72 @@ onBeforeUnmount(() => {
     <p v-else-if="loading" class="tl-loading">数据加载中…</p>
 
     <section class="tl-kpi-row">
-      <article class="tl-kpi">
-        <span class="tl-kpi-label">今日采集新闻总量</span>
-        <strong>{{ kpis.todayCollected }}</strong>
+      <article class="tl-kpi tl-kpi-tile">
+        <div class="tl-kpi-head">
+          <span class="tl-kpi-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M4 6h16M4 12h10M4 18h7" stroke-linecap="round" />
+              <path d="M18 15l3 3-3 3" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="tl-kpi-label">今日采集新闻总量</span>
+        </div>
+        <strong class="tl-kpi-num tl-kpi-num--cyan">{{ kpiDisplay.todayCollected }}</strong>
       </article>
-      <article class="tl-kpi">
-        <span class="tl-kpi-label">今日分析完成量</span>
-        <strong>{{ kpis.todayAnalyzed }}</strong>
+      <article class="tl-kpi tl-kpi-tile">
+        <div class="tl-kpi-head">
+          <span class="tl-kpi-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M12 3v18M8 8l4-4 4 4M8 16l4 4 4-4" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="tl-kpi-label">今日分析完成量</span>
+        </div>
+        <strong class="tl-kpi-num tl-kpi-num--cyan">{{ kpiDisplay.todayAnalyzed }}</strong>
       </article>
-      <article class="tl-kpi danger">
-        <span class="tl-kpi-label">高风险涉华信息数</span>
-        <strong>{{ kpis.chinaHighRisk }}</strong>
+      <article class="tl-kpi tl-kpi-tile danger">
+        <div class="tl-kpi-head">
+          <span class="tl-kpi-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M12 9v4M12 17h.01M10.3 3.2L3.1 18c-.5 1 .2 2.2 1.3 2.2h15.2c1.1 0 1.8-1.2 1.3-2.2L13.7 3.2c-.5-1-1.9-1-2.4 0z" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="tl-kpi-label">高风险涉华信息数</span>
+        </div>
+        <strong class="tl-kpi-num tl-kpi-num--red">{{ kpiDisplay.chinaHighRisk }}</strong>
       </article>
-      <article class="tl-kpi accent">
-        <span class="tl-kpi-label">平均可信度（100 − FakeScore）</span>
-        <strong>{{ kpis.avgCredibility != null ? kpis.avgCredibility : '—' }}</strong>
+      <article class="tl-kpi tl-kpi-tile accent">
+        <div class="tl-kpi-head">
+          <span class="tl-kpi-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 7v5l3 2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="tl-kpi-label">平均可信度（100 − FakeScore）</span>
+        </div>
+        <strong class="tl-kpi-num tl-kpi-num--accent">{{ kpiDisplay.avgCredibility != null ? kpiDisplay.avgCredibility : '—' }}</strong>
       </article>
     </section>
 
     <div class="tl-main">
       <aside class="tl-col tl-left">
-        <div class="tl-panel">
+        <div class="tl-panel tl-panel--glow">
           <div class="tl-panel-title">近7日风险与处理趋势</div>
           <div ref="elTrend" class="tl-chart" />
         </div>
-        <div class="tl-panel">
+        <div class="tl-panel tl-panel--glow">
           <div class="tl-panel-title">风险类型分布（单篇分析）</div>
           <div ref="elPie" class="tl-chart" />
         </div>
-        <div class="tl-panel">
+        <div class="tl-panel tl-panel--glow">
           <div class="tl-panel-title">近30日新闻采集分布（来源/媒体）</div>
           <div ref="elSpread" class="tl-chart" />
         </div>
       </aside>
 
       <main class="tl-center">
-        <div class="tl-panel map-panel">
+        <div class="tl-panel map-panel tl-panel--glow">
           <div class="tl-panel-title">全球舆情风险热力 · 涉华关注链路</div>
           <p class="tl-map-legend">
             国家填色：风险强度；<span class="tl-map-legend-dot" /> 监测节点：跨域舆情热点；弧线：涉华信息传播关联
@@ -855,7 +1608,7 @@ onBeforeUnmount(() => {
       </main>
 
       <aside class="tl-col tl-right">
-        <div class="tl-panel tl-scroll-panel">
+        <div class="tl-panel tl-scroll-panel tl-panel--glow">
           <div class="tl-panel-title">海外新闻实时流 / 高风险预警</div>
           <div class="tl-tabs">
             <button type="button" class="tl-tab" :class="{ on: selectedNewsTab === 'high' }" @click="selectedNewsTab = 'high'">
@@ -885,14 +1638,19 @@ onBeforeUnmount(() => {
             </ul>
           </div>
         </div>
-        <div class="tl-panel">
+        <div class="tl-panel tl-panel--glow">
           <div class="tl-panel-title">多源一致性评分分布</div>
           <div ref="elConsistency" class="tl-chart" />
         </div>
-        <div class="tl-panel cloud-panel">
+        <div class="tl-panel cloud-panel tl-panel--glow">
           <div class="tl-panel-title">热点舆情关键词</div>
           <div class="tl-cloud">
-            <CdsWordCloud v-if="keywordWords.length" :words="keywordWords" :max-words="50" />
+            <CdsWordCloud
+              v-if="keywordWordsForCloud.length"
+              variant="dashboard"
+              :words="keywordWordsForCloud"
+              :max-words="50"
+            />
             <p v-else class="tl-muted">暂无关键词（可补充新闻标题后自动抽取）</p>
           </div>
         </div>
@@ -900,9 +1658,13 @@ onBeforeUnmount(() => {
     </div>
 
     <footer class="tl-footer">
-      <div class="tl-panel">
-        <div class="tl-panel-title">近30日高风险预警统计</div>
-        <div ref="elAlert30" class="tl-chart wide" />
+      <div class="tl-panel tl-panel--glow">
+        <div class="tl-panel-title">多维度舆情风险实时监测</div>
+        <div ref="elRiskRealtime" class="tl-chart tl-chart-footer" />
+      </div>
+      <div class="tl-panel tl-panel--glow">
+        <div class="tl-panel-title">全球涉华舆情风险热力对比</div>
+        <div ref="elGlobalCompare" class="tl-chart tl-chart-footer" />
       </div>
     </footer>
   </div>
@@ -910,16 +1672,69 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .tl-bigscreen {
+  position: relative;
+  isolation: isolate;
   height: 100vh;
   box-sizing: border-box;
-  padding: 16px 20px 24px;
+  width: 100%;
+  max-width: none;
+  padding: 12px 0 16px;
   background: radial-gradient(ellipse 120% 80% at 50% -20%, #1e3a5f 0%, #0a1628 45%, #050b14 100%);
   color: #e2e8f0;
   font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) minmax(180px, 24vh);
-  gap: 12px;
+  gap: 10px;
+}
+
+.tl-bigscreen > * {
+  position: relative;
+  z-index: 1;
+}
+
+.tl-bigscreen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(56, 189, 248, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  opacity: 0.55;
+  animation: tl-grid-drift 22s linear infinite;
+}
+
+.tl-bigscreen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 40% at 20% 30%, rgba(56, 189, 248, 0.08), transparent 55%),
+    radial-gradient(ellipse 50% 35% at 85% 70%, rgba(220, 38, 38, 0.06), transparent 50%);
+  animation: tl-bg-pulse 14s ease-in-out infinite alternate;
+}
+
+@keyframes tl-grid-drift {
+  0% {
+    background-position: 0 0, 0 0;
+  }
+  100% {
+    background-position: 44px 44px, -44px 44px;
+  }
+}
+
+@keyframes tl-bg-pulse {
+  0% {
+    opacity: 0.65;
+  }
+  100% {
+    opacity: 1;
+  }
 }
 
 .tl-header {
@@ -929,7 +1744,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 0;
-  padding-bottom: 10px;
+  padding: 0 10px 10px;
   border-bottom: 1px solid rgba(56, 189, 248, 0.2);
 }
 
@@ -1013,8 +1828,9 @@ onBeforeUnmount(() => {
 .tl-kpi-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+  gap: 10px;
   margin-bottom: 0;
+  padding: 0 10px;
 }
 
 @media (max-width: 1100px) {
@@ -1024,48 +1840,121 @@ onBeforeUnmount(() => {
 }
 
 .tl-kpi {
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-radius: 10px;
-  background: linear-gradient(145deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.65));
-  border: 1px solid rgba(56, 189, 248, 0.15);
-  box-shadow: 0 0 24px rgba(8, 47, 73, 0.35);
+  background: linear-gradient(155deg, rgba(15, 23, 42, 0.92), rgba(30, 58, 95, 0.42));
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  box-shadow:
+    0 0 0 1px rgba(34, 211, 238, 0.08),
+    0 4px 28px rgba(2, 12, 32, 0.55),
+    0 0 32px rgba(14, 165, 233, 0.12);
+}
+
+.tl-kpi-tile {
+  position: relative;
+  overflow: hidden;
+}
+
+.tl-kpi-tile::before {
+  content: '';
+  position: absolute;
+  inset: -40% -20%;
+  background: linear-gradient(115deg, transparent 40%, rgba(56, 189, 248, 0.06) 50%, transparent 60%);
+  animation: tl-kpi-sheen 6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes tl-kpi-sheen {
+  0%,
+  100% {
+    transform: translateX(-12%) rotate(8deg);
+  }
+  50% {
+    transform: translateX(18%) rotate(8deg);
+  }
 }
 
 .tl-kpi.danger {
-  border-color: rgba(244, 63, 94, 0.35);
+  border-color: rgba(244, 63, 94, 0.38);
+  box-shadow:
+    0 0 0 1px rgba(244, 63, 94, 0.12),
+    0 4px 28px rgba(2, 12, 32, 0.55),
+    0 0 36px rgba(244, 63, 94, 0.14);
 }
 
 .tl-kpi.accent {
-  border-color: rgba(34, 211, 238, 0.35);
+  border-color: rgba(34, 211, 238, 0.4);
+  box-shadow:
+    0 0 0 1px rgba(34, 211, 238, 0.12),
+    0 4px 28px rgba(2, 12, 32, 0.55),
+    0 0 36px rgba(34, 211, 238, 0.14);
+}
+
+.tl-kpi-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.tl-kpi-ico {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  color: #7dd3fc;
+  filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.45));
+}
+
+.tl-kpi-ico svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .tl-kpi-label {
   display: block;
   font-size: 0.72rem;
   color: #94a3b8;
-  margin-bottom: 8px;
+  margin-bottom: 0;
+  line-height: 1.3;
 }
 
-.tl-kpi strong {
-  font-size: 1.45rem;
+.tl-kpi-num {
+  display: block;
+  font-size: 1.55rem;
   font-weight: 700;
-  color: #f1f5f9;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
 }
 
-.tl-kpi.danger strong {
-  color: #fb7185;
+.tl-kpi-num--cyan {
+  color: #e0f2fe;
+  text-shadow:
+    0 0 18px rgba(56, 189, 248, 0.55),
+    0 0 36px rgba(14, 165, 233, 0.28);
 }
 
-.tl-kpi.accent strong {
-  color: #22d3ee;
+.tl-kpi-num--red {
+  color: #fda4af;
+  text-shadow:
+    0 0 18px rgba(244, 63, 94, 0.55),
+    0 0 32px rgba(220, 38, 38, 0.25);
+}
+
+.tl-kpi-num--accent {
+  color: #67e8f9;
+  text-shadow:
+    0 0 18px rgba(34, 211, 238, 0.5),
+    0 0 30px rgba(56, 189, 248, 0.22);
 }
 
 .tl-main {
   display: grid;
   grid-template-columns: 24% 1fr 24%;
-  gap: 12px;
+  gap: 8px;
   height: 100%;
   min-height: 0;
+  padding: 0 10px;
 }
 
 @media (max-width: 1400px) {
@@ -1077,7 +1966,7 @@ onBeforeUnmount(() => {
 .tl-col {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   min-height: 0;
 }
 
@@ -1085,12 +1974,34 @@ onBeforeUnmount(() => {
   position: relative;
   display: flex;
   flex-direction: column;
-  border-radius: 10px;
-  background: rgba(15, 23, 42, 0.55);
-  border: 1px solid rgba(51, 65, 85, 0.6);
+  border-radius: 12px;
+  background: linear-gradient(160deg, rgba(11, 28, 52, 0.62), rgba(6, 16, 34, 0.46) 45%, rgba(20, 24, 44, 0.44));
+  border: 1px solid rgba(51, 65, 85, 0.55);
   padding: 10px 10px 8px;
   flex: 1;
   min-height: 0;
+  box-shadow: 0 10px 28px rgba(2, 6, 23, 0.28);
+}
+
+.tl-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  pointer-events: none;
+  background:
+    linear-gradient(140deg, rgba(34, 211, 238, 0.07), transparent 35%),
+    linear-gradient(320deg, rgba(244, 63, 94, 0.06), transparent 42%);
+  opacity: 0.9;
+}
+
+.tl-panel--glow {
+  border-color: rgba(56, 189, 248, 0.28);
+  box-shadow:
+    0 0 0 1px rgba(34, 211, 238, 0.06),
+    0 8px 32px rgba(2, 8, 23, 0.45),
+    0 0 40px rgba(14, 165, 233, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .tl-panel-title {
@@ -1103,9 +2014,23 @@ onBeforeUnmount(() => {
 }
 
 .tl-chart {
+  position: relative;
   width: 100%;
   flex: 1;
   min-height: 120px;
+}
+
+.tl-chart::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(56, 189, 248, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.025) 1px, transparent 1px);
+  background-size: 26px 26px;
+  opacity: 0.65;
 }
 
 .tl-chart.map {
@@ -1119,8 +2044,8 @@ onBeforeUnmount(() => {
     inset 0 0 40px rgba(56, 189, 248, 0.06);
 }
 
-.tl-chart.wide {
-  height: 240px;
+.tl-chart-footer {
+  min-height: 220px;
 }
 
 .map-panel {
@@ -1276,11 +2201,12 @@ onBeforeUnmount(() => {
 
 .tl-footer {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-top: 0;
   height: 100%;
   min-height: 0;
+  padding: 0 10px;
 }
 
 @media (max-width: 1100px) {

@@ -121,14 +121,13 @@ function setMode(next) {
           </label>
           <label class="login-label">
             <span>密码</span>
-            <input v-model="form.password" type="password" :autocomplete="mode === 'login' ? 'current-password' : 'new-password'" :placeholder="mode === 'login' ? '密码（演示可留空则用 demo123）' : '至少 6 位'" />
+            <input v-model="form.password" type="password" :autocomplete="mode === 'login' ? 'current-password' : 'new-password'" :placeholder="mode === 'login' ? '密码' : '至少 6 位'" />
           </label>
           <button type="submit" class="login-submit" :disabled="isSubmitting">
             {{ isSubmitting ? '处理中…' : mode === 'login' ? '登录' : '注册并登录' }}
           </button>
         </form>
         <div v-if="errorMessage" class="login-alert">{{ errorMessage }}</div>
-        <p v-if="mode === 'login'" class="tips">演示账号：用户名 demo，密码 demo123</p>
       </div>
     </section>
   </div>

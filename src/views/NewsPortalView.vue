@@ -578,37 +578,6 @@ onMounted(async () => {
             </article>
           </div>
 
-          <div class="portal-cloud-row">
-            <article class="dash-card dash-cloud card">
-              <header class="dash-head dash-head--cloud">
-                <div>
-                  <p class="dash-kicker">语义</p>
-                  <h3 class="dash-title">热点关键词</h3>
-                </div>
-                <span class="dash-pill">{{ keywordCloud.length }} 词</span>
-              </header>
-              <div class="dash-cloud-stage">
-                <CdsWordCloud
-                  :words="keywordCloud.map((w) => ({ text: w.name, size: w.size }))"
-                  :selected="selectedKeyword"
-                  @select="applyKeywordChip"
-                />
-              </div>
-            </article>
-            <aside class="dash-cloud-side card">
-              <p class="dash-side-title">高频词速览</p>
-              <ol class="dash-kw-rank">
-                <li v-for="(w, i) in keywordTop" :key="w.name">
-                  <span class="dash-kw-i">{{ i + 1 }}</span>
-                  <button type="button" class="dash-kw-btn" @click="applyKeywordChip(w.name)">
-                    {{ w.name }}
-                  </button>
-                  <span class="dash-kw-c">{{ w.count }} 次</span>
-                </li>
-              </ol>
-              <p class="dash-side-hint">与词云联动筛选标题</p>
-            </aside>
-          </div>
         </section>
 
         <section class="feed-card card anim-up delay-2">

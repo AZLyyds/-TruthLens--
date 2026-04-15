@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchNewsList } from '../api/news'
+import { fetchNewsDetail, fetchNewsList } from '../api/news'
 import { newsPortalPicsumPlaceholder } from '../utils/newsFallbackImage'
 
 const router = useRouter()
@@ -16,6 +16,8 @@ const slides = ref([])
 const listItems = ref([])
 const isLoading = ref(false)
 const errorMessage = ref('')
+const brokenSlideImageIds = ref(new Set())
+const brokenListImageIds = ref(new Set())
 
 const n = computed(() => slides.value.length)
 const index = ref(0)
@@ -91,6 +93,42 @@ function formatMeta(item) {
   return `${source} · ${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+function pickPrimaryImageUrl(item) {
+  const cand = [item?.imageUrl, item?.image, item?.thumbnailUrl]
+  for (const v of cand) {
+    if (v == null) continue
+    const s = String(v).trim()
+    if (s) return s
+  }
+  return ''
+}
+
+function getSlideImageSrc(slide, idx) {
+  const sid = String(slide?.id ?? `slide-${idx}`)
+  if (brokenSlideImageIds.value.has(sid) || !slide?.primaryImg) {
+    return slide?.fallbackImg || newsPortalPicsumPlaceholder(`tlstrip${idx + 1}`, 960, 720)
+  }
+  return slide.primaryImg
+}
+
+function getListImageSrc(item, idx) {
+  const sid = String(item?.id ?? `list-${idx}`)
+  if (brokenListImageIds.value.has(sid) || !item?.primaryImg) {
+    return item?.fallbackImg || newsPortalPicsumPlaceholder(`tllist${idx + 1}`, 320, 240)
+  }
+  return item.primaryImg
+}
+
+function onSlideImageError(slide, idx) {
+  const sid = String(slide?.id ?? `slide-${idx}`)
+  brokenSlideImageIds.value.add(sid)
+}
+
+function onListImageError(item, idx) {
+  const sid = String(item?.id ?? `list-${idx}`)
+  brokenListImageIds.value.add(sid)
+}
+
 function buildDataFromNews(items) {
   const rows = Array.isArray(items) ? items : []
   const sorted = rows
@@ -102,11 +140,14 @@ function buildDataFromNews(items) {
 
   const focus = sorted.slice(0, 5)
   const rest = sorted.slice(5, 5 + 18)
+  brokenSlideImageIds.value = new Set()
+  brokenListImageIds.value = new Set()
 
   slides.value = focus.map((n, idx) => ({
     id: n.id,
     title: n.title || '（无标题）',
-    img: n.thumbnailUrl || newsPortalPicsumPlaceholder(`tlstrip${idx + 1}`, 960, 720),
+    primaryImg: pickPrimaryImageUrl(n),
+    fallbackImg: newsPortalPicsumPlaceholder(`tlstrip${idx + 1}`, 960, 720),
   }))
 
   listItems.value = rest.map((n, idx) => ({
@@ -114,7 +155,8 @@ function buildDataFromNews(items) {
     title: n.title || '（无标题）',
     meta: formatMeta(n),
     abstract: String(n.summary || n.description || '').trim(),
-    img: n.thumbnailUrl || newsPortalPicsumPlaceholder(`tllist${idx + 1}`, 320, 240),
+    primaryImg: pickPrimaryImageUrl(n),
+    fallbackImg: newsPortalPicsumPlaceholder(`tllist${idx + 1}`, 320, 240),
   }))
 }
 
@@ -123,7 +165,25 @@ async function loadNews() {
   errorMessage.value = ''
   try {
     const items = await fetchNewsList({ page: 1, pageSize: 60 })
-    buildDataFromNews(items)
+    const rows = Array.isArray(items) ? items : []
+    // 与详情页图片来源对齐：优先取 detail.image（详情页当前主图字段）
+    const enriched = await Promise.all(
+      rows.map(async (item) => {
+        if (item?.id == null) return item
+        try {
+          const detail = await fetchNewsDetail(item.id)
+          return {
+            ...item,
+            image: detail?.image || item?.image || null,
+            imageUrl: detail?.imageUrl || item?.imageUrl || null,
+            thumbnailUrl: detail?.thumbnailUrl || item?.thumbnailUrl || null,
+          }
+        } catch {
+          return item
+        }
+      }),
+    )
+    buildDataFromNews(enriched)
   } catch (e) {
     errorMessage.value = e?.message || '新闻数据加载失败'
   } finally {
@@ -174,7 +234,14 @@ onBeforeUnmount(() => {
               >
                 <div class="focus-slide-card" @click="goNewsDetail(s)">
                   <figure class="focus-slide-figure">
-                    <img :src="s.img" alt="" width="960" height="720" :loading="i === 0 ? 'eager' : 'lazy'" />
+                    <img
+                      :src="getSlideImageSrc(s, i)"
+                      alt=""
+                      width="960"
+                      height="720"
+                      :loading="i === 0 ? 'eager' : 'lazy'"
+                      @error="onSlideImageError(s, i)"
+                    />
                     <figcaption class="focus-slide-overlay">
                       <h3>{{ s.title }}</h3>
                     </figcaption>
@@ -198,9 +265,9 @@ onBeforeUnmount(() => {
       <section class="portal-screen-section anim-up delay-2" aria-labelledby="list-heading">
         <h2 id="list-heading" class="portal-section-title">要闻列表</h2>
         <div class="news-feed">
-          <article v-for="item in listItems" :key="String(item.id ?? item.img)" class="news-list-item" @click="goNewsDetail(item)">
+          <article v-for="(item, i) in listItems" :key="String(item.id ?? item.fallbackImg)" class="news-list-item" @click="goNewsDetail(item)">
             <figure class="news-list-thumb">
-              <img :src="item.img" alt="" width="320" height="240" loading="lazy" />
+              <img :src="getListImageSrc(item, i)" alt="" width="320" height="240" loading="lazy" @error="onListImageError(item, i)" />
             </figure>
             <div class="news-list-body">
               <h3>{{ item.title }}</h3>

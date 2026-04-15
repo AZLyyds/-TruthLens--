@@ -18,6 +18,7 @@ const related = ref([])
 const relatedStart = ref(0)
 const relatedPageSize = ref(3)
 const fontStep = ref(1)
+const brokenRelatedImageIds = ref(new Set())
 /** 原文图缺失或加载失败时，与门户大屏焦点区相同：picsum 固定 seed（见 newsFallbackImage） */
 const heroImageFallback = ref(false)
 /** 浏览器书签引导层（网页无法代用户按出收藏夹，仅可提示快捷键 / 复制链接） */
@@ -312,6 +313,36 @@ function onHeroImageError() {
   heroImageFallback.value = true
 }
 
+function pickRelatedPrimaryImage(item) {
+  const cand = [item?.imageUrl, item?.image, item?.thumbnailUrl]
+  for (const v of cand) {
+    if (v == null) continue
+    const s = String(v).trim()
+    if (s) return s
+  }
+  return ''
+}
+
+function relatedFallbackSrc(item) {
+  const seed = `ndrel${String(item?.id ?? '') || 'x'}`
+  return newsPortalPicsumPlaceholder(seed, 320, 240)
+}
+
+function getRelatedImageSrc(item) {
+  if (!item) return relatedFallbackSrc(item)
+  const sid = String(item.id ?? '')
+  const primary = pickRelatedPrimaryImage(item)
+  if (!primary || brokenRelatedImageIds.value.has(sid)) return relatedFallbackSrc(item)
+  return primary
+}
+
+function onRelatedImageError(item) {
+  if (!item) return
+  const sid = String(item.id ?? '')
+  if (!sid) return
+  brokenRelatedImageIds.value.add(sid)
+}
+
 const heroImageIsPlaceholder = computed(
   () => !primaryHeroImageUrl.value || heroImageFallback.value,
 )
@@ -326,10 +357,30 @@ async function loadRelated(current) {
       const same = rows.filter((x) => x.source === src)
       if (same.length >= 2) rows = same
     }
-    related.value = rows.slice(0, 12)
+    const topRows = rows.slice(0, 18)
+    // /news 列表不返回图片字段；与门户页一致，按 id 补拉详情以获取可用原图
+    const enriched = await Promise.all(
+      topRows.map(async (item) => {
+        if (item?.id == null) return item
+        try {
+          const d = await fetchNewsDetail(item.id)
+          return {
+            ...item,
+            image: d?.image || item?.image || null,
+            imageUrl: d?.imageUrl || item?.imageUrl || null,
+            thumbnailUrl: d?.thumbnailUrl || item?.thumbnailUrl || null,
+          }
+        } catch {
+          return item
+        }
+      }),
+    )
+    related.value = enriched.slice(0, 12)
+    brokenRelatedImageIds.value = new Set()
     relatedStart.value = 0
   } catch {
     related.value = []
+    brokenRelatedImageIds.value = new Set()
     relatedStart.value = 0
   }
 }
@@ -945,14 +996,7 @@ watch(bookmarkGuideOpen, (open) => {
                   @click="goRelated(item)"
                 >
                   <div class="nd-rel-thumb-wrap">
-                    <img
-                      v-if="item.thumbnailUrl || item.image || item.imageUrl"
-                      class="nd-rel-thumb"
-                      :src="item.thumbnailUrl || item.image || item.imageUrl"
-                      alt=""
-                      loading="lazy"
-                    />
-                    <div v-else class="nd-rel-thumb-empty">暂无原图</div>
+                    <img class="nd-rel-thumb" :src="getRelatedImageSrc(item)" alt="" loading="lazy" @error="onRelatedImageError(item)" />
                     <span class="nd-rel-risk" :class="'r--' + riskBand(item.risk)">{{ item.risk || '—' }}</span>
                   </div>
                   <div class="nd-rel-card-body">
